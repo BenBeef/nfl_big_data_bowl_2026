@@ -803,7 +803,7 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
     
     criterion = TemporalHuber(delta=0.5, time_decay=0.03)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, verbose=False)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     
     train_batches = []
     for i in range(0, len(X_train), config.BATCH_SIZE):
