@@ -30,3 +30,7 @@ play_id 表示一个(进攻/防守)回合
 7- 每个帧中，既有防守方又有进攻方，既有npc，又有英雄
 
 
+总结:
+    1- 每场游戏下的每个回合的每一帧，既有npc又有player，既有进攻方(Offense)又有防守方(Defense),
+       整体来看，npc/player=3/1, 防守方(Defense)/进攻方(Offense)=2/1
+    2- 这次kaggle竞赛要做的是，用3个npc预测一个player
