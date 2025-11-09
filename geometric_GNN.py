@@ -17,6 +17,7 @@ Architecture:
 Target: 0.54-0.56 LB
 """
 
+from sklearn import metrics
 import torch
 import torch.nn as nn
 import numpy as np
@@ -796,6 +797,12 @@ def prepare_targets(batch_dx, batch_dy, max_h):
     targets = torch.stack([torch.stack(tensors_x), torch.stack(tensors_y)], dim=-1)
     return targets, torch.stack(masks)
 
+
+def rmse(pred, target, mask):
+    pred = np.asarray(pred); target = np.asarray(target); mask = np.asarray(mask)
+    err_sq = np.sum((pred - target) ** 2, axis=-1)  # (B, H)
+    return float(np.sqrt(np.sum(err_sq * mask) / (2 * np.sum(mask))))
+
 def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy, 
                 input_dim, horizon, config):
     device = config.DEVICE
@@ -828,6 +835,7 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
         val_batches.append((bx, by, bm))
     
     best_loss, best_state, bad = float('inf'), None, 0
+    best_score = float('inf')
     
     for epoch in range(1, config.EPOCHS + 1):
         model.train()
@@ -844,22 +852,32 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
         
         model.eval()
         val_losses = []
+        bys, preds, masks = [], [], []
         with torch.no_grad():
             for bx, by, bm in val_batches:
                 bx, by, bm = bx.to(device), by.to(device), bm.to(device)
                 pred = model(bx)
                 val_losses.append(criterion(pred, by, bm).item())
+                bys.append(by)
+                preds.append(pred)
+                masks.append(bm)
         
         train_loss, val_loss = np.mean(train_losses), np.mean(val_losses)
         scheduler.step(val_loss)
+
+        bys = torch.cat(bys)      # torch.Tensor
+        preds = torch.cat(preds)  # torch.Tensor
+        masks = torch.cat(masks)  # torch.Tensor
+        score = rmse(preds, bys, masks)
         
         if epoch % 10 == 0:
-            print(f"  Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}")
+            print(f"  Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}, score={score:.4f}")
         
         if val_loss < best_loss:
             best_loss = val_loss
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             bad = 0
+            best_score = score
         else:
             bad += 1
             if bad >= config.PATIENCE:
@@ -869,7 +887,7 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
     if best_state:
         model.load_state_dict(best_state)
     
-    return model, best_loss
+    return model, best_loss, best_score
 
 # ============================================================================
 # MAIN
@@ -915,6 +933,7 @@ def main():
     gkf = GroupKFold(n_splits=config.N_FOLDS)
     
     models, scalers = [], []
+    scores = []
     
     for fold, (tr, va) in enumerate(gkf.split(sequences, groups=groups), 1):
         print(f"\n{'='*60}")
@@ -934,7 +953,7 @@ def main():
         X_tr_sc = [scaler.transform(s) for s in X_tr]
         X_va_sc = [scaler.transform(s) for s in X_va]
         
-        model, loss = train_model(
+        model, loss, score = train_model(
             X_tr_sc, y_tr_dx, y_tr_dy,
             X_va_sc, y_va_dx, y_va_dy,
             X_tr[0].shape[-1], config.MAX_FUTURE_HORIZON, config
@@ -942,9 +961,13 @@ def main():
         
         models.append(model)
         scalers.append(scaler)
+
+        scores.append(score)
         
-        print(f"\n✓ Fold {fold} - Loss: {loss:.5f}")
+        print(f"\n✓ Fold {fold} - Loss: {loss:.5f}, score:{score:.5f}")
     
+    print(f"AVG valid rmse:{np.mean(scores)}")
+
     # Test
     print("\n[4/4] Creating test predictions...")
     test_seq, test_ids, test_geo_x, test_geo_y = prepare_sequences_geometric(
