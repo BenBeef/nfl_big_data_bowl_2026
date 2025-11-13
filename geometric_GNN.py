@@ -431,28 +431,34 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     print("Step 1: Base features...")
     
+    # 身高 + bmi
     input_df['player_height_feet'] = input_df['player_height'].apply(height_to_feet)
     height_parts = input_df['player_height'].str.split('-', expand=True)
     input_df['height_inches'] = height_parts[0].astype(float) * 12 + height_parts[1].astype(float)
     input_df['bmi'] = (input_df['player_weight'] / (input_df['height_inches']**2)) * 703
     
+    # 速度和加速度的x,y分量
     dir_rad = np.deg2rad(input_df['dir'].fillna(0))
     input_df['velocity_x'] = input_df['s'] * np.sin(dir_rad)
     input_df['velocity_y'] = input_df['s'] * np.cos(dir_rad)
     input_df['acceleration_x'] = input_df['a'] * np.cos(dir_rad)
     input_df['acceleration_y'] = input_df['a'] * np.sin(dir_rad)
     
+    # 动能和动量xy分量
     input_df['speed_squared'] = input_df['s'] ** 2
     input_df['accel_magnitude'] = np.sqrt(input_df['acceleration_x']**2 + input_df['acceleration_y']**2)
     input_df['momentum_x'] = input_df['velocity_x'] * input_df['player_weight']
     input_df['momentum_y'] = input_df['velocity_y'] * input_df['player_weight']
     input_df['kinetic_energy'] = 0.5 * input_df['player_weight'] * input_df['speed_squared']
     
+    # 朝向和运动方向夹角
     input_df['orientation_diff'] = np.abs(input_df['o'] - input_df['dir'])
     input_df['orientation_diff'] = np.minimum(input_df['orientation_diff'], 360 - input_df['orientation_diff'])
     
+    # 防守方vs进攻方
     input_df['is_offense'] = (input_df['player_side'] == 'Offense').astype(int)
     input_df['is_defense'] = (input_df['player_side'] == 'Defense').astype(int)
+    # 4中角色 
     input_df['is_receiver'] = (input_df['player_role'] == 'Targeted Receiver').astype(int)
     input_df['is_coverage'] = (input_df['player_role'] == 'Defensive Coverage').astype(int)
     input_df['is_passer'] = (input_df['player_role'] == 'Passer').astype(int)
@@ -461,15 +467,19 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     input_df['role_passer'] = input_df['is_passer']
     input_df['side_offense'] = input_df['is_offense']
     
+    # 落地点相关特征
     if 'ball_land_x' in input_df.columns:
+        # 落地点距离
         ball_dx = input_df['ball_land_x'] - input_df['x']
         ball_dy = input_df['ball_land_y'] - input_df['y']
         input_df['distance_to_ball'] = np.sqrt(ball_dx**2 + ball_dy**2)
         input_df['dist_to_ball'] = input_df['distance_to_ball']
         input_df['dist_squared'] = input_df['distance_to_ball'] ** 2
+        # 落地点夹角
         input_df['angle_to_ball'] = np.arctan2(ball_dy, ball_dx)
         input_df['ball_direction_x'] = ball_dx / (input_df['distance_to_ball'] + 1e-6)
         input_df['ball_direction_y'] = ball_dy / (input_df['distance_to_ball'] + 1e-6)
+        # 接近球的速度
         input_df['closing_speed_ball'] = (
             input_df['velocity_x'] * input_df['ball_direction_x'] +
             input_df['velocity_y'] * input_df['ball_direction_y']
@@ -484,23 +494,28 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     print("Step 2: Advanced features...")
     
+    # 对手统计特征
     opp_features = get_opponent_features(input_df)
     input_df = input_df.merge(opp_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
     
+    # 个人最后5条统计特征
     if is_training:
         route_features, route_kmeans, route_scaler = extract_route_patterns(input_df)
     else:
         route_features = extract_route_patterns(input_df, route_kmeans, route_scaler, fit=False)
     input_df = input_df.merge(route_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
     
+    # (离我)最近的几个球员的统计信息
     gnn_features = compute_neighbor_embeddings(input_df)
     input_df = input_df.merge(gnn_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
     
+    # 压力特征(对手特征的副产品)
     if 'nearest_opp_dist' in input_df.columns:
         input_df['pressure'] = 1 / np.maximum(input_df['nearest_opp_dist'], 0.5)
         input_df['under_pressure'] = (input_df['nearest_opp_dist'] < 3).astype(int)
         input_df['pressure_x_speed'] = input_df['pressure'] * input_df['s']
     
+    # 最近接球手的一些衍生特征
     if 'mirror_wr_vx' in input_df.columns:
         s_safe = np.maximum(input_df['s'], 0.1)
         input_df['mirror_similarity'] = (
@@ -516,11 +531,14 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     gcols = ['game_id', 'play_id', 'nfl_id']
     
+    # 自我时序特征
+    # 当前frame分别可以看到前(1, 2, 3, 4, 5)个frame的特征原始值
     for lag in [1, 2, 3, 4, 5]:
         for col in ['x', 'y', 'velocity_x', 'velocity_y', 's', 'a']:
             if col in input_df.columns:
                 input_df[f'{col}_lag{lag}'] = input_df.groupby(gcols)[col].shift(lag)
     
+    # 到当前frame的[3, 5]窗口内的滑动平均值/标准差
     for window in [3, 5]:
         for col in ['x', 'y', 'velocity_x', 'velocity_y', 's']:
             if col in input_df.columns:
@@ -534,11 +552,12 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
                       .rolling(window, min_periods=1).std()
                       .reset_index(level=[0,1,2], drop=True)
                 )
-    
+    # 相连两个frame的速度差
     for col in ['velocity_x', 'velocity_y']:
         if col in input_df.columns:
             input_df[f'{col}_delta'] = input_df.groupby(gcols)[col].diff()
     
+    # 速度vx/vy/s指数加权平均值(ema)
     input_df['velocity_x_ema'] = input_df.groupby(gcols)['velocity_x'].transform(
         lambda x: x.ewm(alpha=0.3, adjust=False).mean()
     )
@@ -551,18 +570,26 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     print("Step 4: Time features...")
     
+
+    # num_frames_output=预测/跟踪frame数
     if 'num_frames_output' in input_df.columns:
         max_frames = input_df['num_frames_output']
         
+        # 预测/跟踪时长
         input_df['max_play_duration'] = max_frames / 10.0
+        # 每个frame_id上的时间
         input_df['frame_time'] = input_df['frame_id'] / 10.0
+        # 每个frame_id/预测frame数
         input_df['progress_ratio'] = input_df['frame_id'] / np.maximum(max_frames, 1)
+        # 剩余时间
         input_df['time_remaining'] = (max_frames - input_df['frame_id']) / 10.0
         input_df['frames_remaining'] = max_frames - input_df['frame_id']
         
+        # 预期落地点
         input_df['expected_x_at_ball'] = input_df['x'] + input_df['velocity_x'] * input_df['frame_time']
         input_df['expected_y_at_ball'] = input_df['y'] + input_df['velocity_y'] * input_df['frame_time']
         
+        # 落地点  TODO 分析其余特征
         if 'ball_land_x' in input_df.columns:
             input_df['error_from_ball_x'] = input_df['expected_x_at_ball'] - input_df['ball_land_x']
             input_df['error_from_ball_y'] = input_df['expected_y_at_ball'] - input_df['ball_land_y']
@@ -799,7 +826,22 @@ def prepare_targets(batch_dx, batch_dy, max_h):
 
 
 def rmse(pred, target, mask):
-    pred = np.asarray(pred); target = np.asarray(target); mask = np.asarray(mask)
+    # Convert tensors to CPU if they're on CUDA before converting to numpy
+    if isinstance(pred, torch.Tensor):
+        pred = pred.cpu().detach().numpy()
+    else:
+        pred = np.asarray(pred)
+    
+    if isinstance(target, torch.Tensor):
+        target = target.cpu().detach().numpy()
+    else:
+        target = np.asarray(target)
+    
+    if isinstance(mask, torch.Tensor):
+        mask = mask.cpu().detach().numpy()
+    else:
+        mask = np.asarray(mask)
+    
     err_sq = np.sum((pred - target) ** 2, axis=-1)  # (B, H)
     return float(np.sqrt(np.sum(err_sq * mask) / (2 * np.sum(mask))))
 
