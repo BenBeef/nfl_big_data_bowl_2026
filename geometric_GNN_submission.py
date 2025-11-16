@@ -73,7 +73,7 @@ class Config:
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    DEBUG = True
+    DEBUG = False
 
 def set_seed(seed=42):
     import random
@@ -919,7 +919,7 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
         score = rmse(preds, bys, masks)
         
         if epoch % 10 == 0:
-            print(f"  Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}, score={score:.4f}")
+            print(f"  Epoch {epoch}: train={train_loss:.4f}, val_loss={val_loss:.4f}, val_RMSE={score:.4f}")
         
         if val_loss < best_loss:
             best_loss = val_loss
@@ -1083,7 +1083,7 @@ class NFLPredictor:
             scores.append(score)
             fold_losses.append(loss)
             
-            print(f"\n✓ Fold {fold} - Loss: {loss:.5f}, Validation RMSE:{score:.5f}")
+            print(f"\n✓ Fold {fold} - Loss: {loss:.5f}, val_RMSE:{score:.5f}")
         
         avg_rmse = np.mean(scores)
         avg_loss = np.mean(fold_losses)
@@ -1093,7 +1093,7 @@ class NFLPredictor:
         if config.SAVE_ARTIFACTS:
             try:
                 text = {"avg_rmse":avg_rmse, "avg_loss":avg_loss}
-                with open(config.LOAD_DIR + "/train_results.json", "w") as f:
+                with open(config.MODEL_DIR / "train_results.json", "w") as f:
                     import json
                     json.dump(text, f)
             except Exception as e:
@@ -1174,15 +1174,15 @@ def predict(test: pl.DataFrame, test_input: pl.DataFrame) -> pl.DataFrame | pd.D
 
 inference_server = kaggle_evaluation.nfl_inference_server.NFLInferenceServer(predict)
 
-# if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
-#     # This runs when Kaggle evaluates your submission on the hidden test set
-#     inference_server.serve()
-# else:
-#     # This runs when you run the notebook locally (e.g., in a Kaggle session)
-#     # The original main() logic should be executed once in the __init__ of NFLPredictor
-#     # to train and save the model/weights which would be loaded here in a real scenario.
-#     # For this script, we'll run a local gateway with the training included in __init__.
-#     # Note: The provided files are .csv, not the final directory structure, so this
-#     # local run might require custom paths depending on the exact setup.
-#     # Based on the demo, we use the provided structure:
-#     inference_server.run_local_gateway(('/kaggle/input/nfl-big-data-bowl-2026-prediction/',))
+if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
+    # This runs when Kaggle evaluates your submission on the hidden test set
+    inference_server.serve()
+else:
+    # This runs when you run the notebook locally (e.g., in a Kaggle session)
+    # The original main() logic should be executed once in the __init__ of NFLPredictor
+    # to train and save the model/weights which would be loaded here in a real scenario.
+    # For this script, we'll run a local gateway with the training included in __init__.
+    # Note: The provided files are .csv, not the final directory structure, so this
+    # local run might require custom paths depending on the exact setup.
+    # Based on the demo, we use the provided structure:
+    inference_server.run_local_gateway(('/kaggle/input/nfl-big-data-bowl-2026-prediction/',))
