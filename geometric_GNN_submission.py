@@ -993,7 +993,7 @@ class NFLPredictor:
                     scaler = None
 
                 # instantiate model and load state
-                model = JointSeqModel(config.HIDDEN_DIM, config.MAX_FUTURE_HORIZON).to(config.DEVICE)
+                model = JointSeqModel(input_dim, config.MAX_FUTURE_HORIZON).to(config.DEVICE)
                 try:
                     state = torch.load(model_path, map_location='cpu')
                     model.load_state_dict(state)
@@ -1096,6 +1096,11 @@ class NFLPredictor:
                 with open(config.MODEL_DIR / "train_results.json", "w") as f:
                     import json
                     json.dump(text, f)
+                with open(config.MODEL_DIR / "route_kmeans.pkl", "wb") as f:
+                    pickle.dump(self.route_kmeans, f)
+                with open(config.MODEL_DIR / "route_scaler.pkl", "wb") as f:
+                    pickle.dump(self.route_scaler, f)
+                print(f"✓ Saved route artifacts -> route_kmeans.pkl, route_scaler.pkl")
             except Exception as e:
                 print("Warning: failed to save scores:", e)
 
@@ -1160,7 +1165,8 @@ class NFLPredictor:
                 })
         
         submission = pd.DataFrame(rows)
-        return submission
+        # Kaggle API requires only 'x' and 'y', not 'id'
+        return submission[['x', 'y']]
 
 # This must be outside the class and is what the API calls
 predictor = NFLPredictor()
