@@ -15,6 +15,8 @@ Architecture:
 ✓ Train on corrections to geometric baseline (the breakthrough)
 
 Target: 0.54-0.56 LB
+from 
+https://www.kaggle.com/code/jinliangbi/nfl-big-data-bowl-2026-geometry-gnn-930cf7?scriptVersionId=273127191
 """
 
 import torch
