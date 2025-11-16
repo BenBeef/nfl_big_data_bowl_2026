@@ -53,7 +53,7 @@ class Config:
     LOAD_DIR = '/kaggle/input/nfl-bdb-2026/nfl-gnn-a43/outputs/models'
   
     SEED = 42
-    N_FOLDS = 10
+    N_FOLDS = 5
     BATCH_SIZE = 256
     EPOCHS = 200
     PATIENCE = 30
@@ -62,15 +62,6 @@ class Config:
     WINDOW_SIZE = 10
     HIDDEN_DIM = 128
     MAX_FUTURE_HORIZON = 94
-    
-    # === Transformer 超参数 ===
-    N_HEADS = 4  # Transformer 的注意力头数
-    N_LAYERS = 2 # Transformer 编码器的层数
-    
-    # === 新增：ResidualMLP Head 超参数 ===
-    MLP_HIDDEN_DIM = 256 # MLP 头的内部隐藏维度
-    N_RES_BLOCKS = 2     # 残差块的数量
-    # ==================================
     
     FIELD_X_MIN, FIELD_X_MAX = 0.0, 120.0
     FIELD_Y_MIN, FIELD_Y_MAX = 0.0, 53.3
@@ -81,9 +72,8 @@ class Config:
     N_ROUTE_CLUSTERS = 7
     
     DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    DEBUG = False
-    if DEBUG:
-        N_FOLDS = 2
+
+    DEBUG = True
 
 def set_seed(seed=42):
     import random
@@ -451,28 +441,34 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     print("Step 1: Base features...")
     
+    # 身高 + bmi
     input_df['player_height_feet'] = input_df['player_height'].apply(height_to_feet)
     height_parts = input_df['player_height'].str.split('-', expand=True)
     input_df['height_inches'] = height_parts[0].astype(float) * 12 + height_parts[1].astype(float)
     input_df['bmi'] = (input_df['player_weight'] / (input_df['height_inches']**2)) * 703
     
+    # 速度和加速度的x,y分量
     dir_rad = np.deg2rad(input_df['dir'].fillna(0))
     input_df['velocity_x'] = input_df['s'] * np.sin(dir_rad)
     input_df['velocity_y'] = input_df['s'] * np.cos(dir_rad)
     input_df['acceleration_x'] = input_df['a'] * np.cos(dir_rad)
     input_df['acceleration_y'] = input_df['a'] * np.sin(dir_rad)
     
+    # 动能和动量xy分量
     input_df['speed_squared'] = input_df['s'] ** 2
     input_df['accel_magnitude'] = np.sqrt(input_df['acceleration_x']**2 + input_df['acceleration_y']**2)
     input_df['momentum_x'] = input_df['velocity_x'] * input_df['player_weight']
     input_df['momentum_y'] = input_df['velocity_y'] * input_df['player_weight']
     input_df['kinetic_energy'] = 0.5 * input_df['player_weight'] * input_df['speed_squared']
     
+    # 朝向和运动方向夹角
     input_df['orientation_diff'] = np.abs(input_df['o'] - input_df['dir'])
     input_df['orientation_diff'] = np.minimum(input_df['orientation_diff'], 360 - input_df['orientation_diff'])
     
+    # 防守方vs进攻方
     input_df['is_offense'] = (input_df['player_side'] == 'Offense').astype(int)
     input_df['is_defense'] = (input_df['player_side'] == 'Defense').astype(int)
+    # 4中角色 
     input_df['is_receiver'] = (input_df['player_role'] == 'Targeted Receiver').astype(int)
     input_df['is_coverage'] = (input_df['player_role'] == 'Defensive Coverage').astype(int)
     input_df['is_passer'] = (input_df['player_role'] == 'Passer').astype(int)
@@ -481,15 +477,19 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     input_df['role_passer'] = input_df['is_passer']
     input_df['side_offense'] = input_df['is_offense']
     
+    # 落地点相关特征
     if 'ball_land_x' in input_df.columns:
+        # 落地点距离
         ball_dx = input_df['ball_land_x'] - input_df['x']
         ball_dy = input_df['ball_land_y'] - input_df['y']
         input_df['distance_to_ball'] = np.sqrt(ball_dx**2 + ball_dy**2)
         input_df['dist_to_ball'] = input_df['distance_to_ball']
         input_df['dist_squared'] = input_df['distance_to_ball'] ** 2
+        # 落地点夹角
         input_df['angle_to_ball'] = np.arctan2(ball_dy, ball_dx)
         input_df['ball_direction_x'] = ball_dx / (input_df['distance_to_ball'] + 1e-6)
         input_df['ball_direction_y'] = ball_dy / (input_df['distance_to_ball'] + 1e-6)
+        # 接近球的速度
         input_df['closing_speed_ball'] = (
             input_df['velocity_x'] * input_df['ball_direction_x'] +
             input_df['velocity_y'] * input_df['ball_direction_y']
@@ -504,26 +504,28 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     print("Step 2: Advanced features...")
     
+    # 对手统计特征
     opp_features = get_opponent_features(input_df)
     input_df = input_df.merge(opp_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
     
+    # 个人最后5条统计特征
     if is_training:
         route_features, route_kmeans, route_scaler = extract_route_patterns(input_df)
     else:
         route_features = extract_route_patterns(input_df, route_kmeans, route_scaler, fit=False)
     input_df = input_df.merge(route_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
     
-    if not route_features.empty:
-        input_df = input_df.merge(route_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
-
+    # (离我)最近的几个球员的统计信息
     gnn_features = compute_neighbor_embeddings(input_df)
     input_df = input_df.merge(gnn_features, on=['game_id', 'play_id', 'nfl_id'], how='left')
     
+    # 压力特征(对手特征的副产品)
     if 'nearest_opp_dist' in input_df.columns:
         input_df['pressure'] = 1 / np.maximum(input_df['nearest_opp_dist'], 0.5)
         input_df['under_pressure'] = (input_df['nearest_opp_dist'] < 3).astype(int)
         input_df['pressure_x_speed'] = input_df['pressure'] * input_df['s']
     
+    # 最近接球手的一些衍生特征
     if 'mirror_wr_vx' in input_df.columns:
         s_safe = np.maximum(input_df['s'], 0.1)
         input_df['mirror_similarity'] = (
@@ -539,11 +541,14 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     gcols = ['game_id', 'play_id', 'nfl_id']
     
+    # 自我时序特征
+    # 当前frame分别可以看到前(1, 2, 3, 4, 5)个frame的特征原始值
     for lag in [1, 2, 3, 4, 5]:
         for col in ['x', 'y', 'velocity_x', 'velocity_y', 's', 'a']:
             if col in input_df.columns:
                 input_df[f'{col}_lag{lag}'] = input_df.groupby(gcols)[col].shift(lag)
     
+    # 到当前frame的[3, 5]窗口内的滑动平均值/标准差
     for window in [3, 5]:
         for col in ['x', 'y', 'velocity_x', 'velocity_y', 's']:
             if col in input_df.columns:
@@ -557,11 +562,12 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
                       .rolling(window, min_periods=1).std()
                       .reset_index(level=[0,1,2], drop=True)
                 )
-    
+    # 相连两个frame的速度差
     for col in ['velocity_x', 'velocity_y']:
         if col in input_df.columns:
             input_df[f'{col}_delta'] = input_df.groupby(gcols)[col].diff()
     
+    # 速度vx/vy/s指数加权平均值(ema)
     input_df['velocity_x_ema'] = input_df.groupby(gcols)['velocity_x'].transform(
         lambda x: x.ewm(alpha=0.3, adjust=False).mean()
     )
@@ -574,18 +580,26 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     print("Step 4: Time features...")
     
+
+    # num_frames_output=预测/跟踪frame数
     if 'num_frames_output' in input_df.columns:
         max_frames = input_df['num_frames_output']
         
+        # 预测/跟踪时长
         input_df['max_play_duration'] = max_frames / 10.0
+        # 每个frame_id上的时间
         input_df['frame_time'] = input_df['frame_id'] / 10.0
+        # 每个frame_id/预测frame数
         input_df['progress_ratio'] = input_df['frame_id'] / np.maximum(max_frames, 1)
+        # 剩余时间
         input_df['time_remaining'] = (max_frames - input_df['frame_id']) / 10.0
         input_df['frames_remaining'] = max_frames - input_df['frame_id']
         
+        # 预期落地点
         input_df['expected_x_at_ball'] = input_df['x'] + input_df['velocity_x'] * input_df['frame_time']
         input_df['expected_y_at_ball'] = input_df['y'] + input_df['velocity_y'] * input_df['frame_time']
         
+        # 落地点  TODO 分析其余特征
         if 'ball_land_x' in input_df.columns:
             input_df['error_from_ball_x'] = input_df['expected_x_at_ball'] - input_df['ball_land_x']
             input_df['error_from_ball_y'] = input_df['expected_y_at_ball'] - input_df['ball_land_y']
@@ -745,119 +759,34 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     return sequences, sequence_ids, geo_endpoints_x, geo_endpoints_y
 
 # ============================================================================
-# MODEL ARCHITECTURE (ST-TRANSFORMER with ResidualMLP Head)
+# MODEL ARCHITECTURE (YOUR PROVEN GRU + ATTENTION)
 # ============================================================================
-class ResidualBlock(nn.Module):
-    """
-    一个标准的残差块：FFN + 快捷连接
-    """
-    def __init__(self, dim, hidden_dim, dropout=0.1):
+
+class JointSeqModel(nn.Module):
+    """Your proven architecture - unchanged"""
+    
+    def __init__(self, input_dim, horizon):
         super().__init__()
-        self.ffn = nn.Sequential(
-            nn.Linear(dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, dim),
-            nn.Dropout(dropout)
+        self.gru = nn.GRU(input_dim, 128, num_layers=2, batch_first=True, dropout=0.1)
+        self.pool_ln = nn.LayerNorm(128)
+        self.pool_attn = nn.MultiheadAttention(128, num_heads=4, batch_first=True)
+        self.pool_query = nn.Parameter(torch.randn(1, 1, 128))
+        
+        self.head = nn.Sequential(
+            nn.Linear(128, 256), 
+            nn.GELU(), 
+            nn.Dropout(0.2), 
+            nn.Linear(256, horizon * 2)
         )
-        self.norm = nn.LayerNorm(dim)
     
     def forward(self, x):
-        # Pre-normalization
-        return x + self.ffn(self.norm(x))
-
-class ResidualMLPHead(nn.Module):
-    """
-    替换原有的 nn.Sequential Head
-    """
-    def __init__(self, input_dim, hidden_dim, output_dim, n_res_blocks=2, dropout=0.2):
-        super().__init__()
-        # 1. 从 context_dim (128) 投影到 mlp_hidden_dim (256)
-        self.input_layer = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.GELU()
-        )
-        
-        # 2. 一系列的残差块 (在 256 维度上操作)
-        self.residual_blocks = nn.Sequential(
-            *[ResidualBlock(hidden_dim, hidden_dim * 2, dropout) for _ in range(n_res_blocks)]
-        )
-        
-        # 3. 最后的 LayerNorm 和输出投影
-        self.output_norm = nn.LayerNorm(hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, output_dim)
-    
-    def forward(self, x):
-        x = self.input_layer(x)
-        x = self.residual_blocks(x)
-        x = self.output_norm(x)
-        x = self.output_layer(x)
-        return x
-
-class STTransformer(nn.Module):
-    """
-    Spatio-Temporal Transformer
-    """
-    def __init__(self, input_dim, hidden_dim, horizon, window_size, n_heads, n_layers, dropout=0.1):
-        super().__init__()
-        config = Config() # 获取 MLP 的超参数
-        self.horizon = horizon
-        self.hidden_dim = hidden_dim
-
-        # 1. Spatio: 特征嵌入
-        self.input_projection = nn.Linear(input_dim, hidden_dim)
-        
-        # 2. Temporal: 可学习的位置编码
-        self.pos_embed = nn.Parameter(torch.randn(1, window_size, hidden_dim)) 
-        self.embed_dropout = nn.Dropout(dropout)
-
-        # 3. Transformer Encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=hidden_dim,
-            nhead=n_heads,
-            dim_feedforward=hidden_dim * 4,
-            dropout=dropout,
-            batch_first=True,
-            activation='gelu'
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer,
-            num_layers=n_layers
-        )
-
-        # 4. 池化 (复用你成熟的 Attention Pooling 机制)
-        self.pool_ln = nn.LayerNorm(hidden_dim)
-        self.pool_attn = nn.MultiheadAttention(hidden_dim, num_heads=n_heads, batch_first=True)
-        self.pool_query = nn.Parameter(torch.randn(1, 1, hidden_dim)) 
-
-        # 5. 输出 Head (!!! 已替换为 ResidualMLPHead !!!)
-        self.head = ResidualMLPHead(
-            input_dim=hidden_dim,                   # 128
-            hidden_dim=config.MLP_HIDDEN_DIM,       # 256
-            output_dim=horizon * 2,                 # 188
-            n_res_blocks=config.N_RES_BLOCKS,       # 2
-            dropout=0.2
-        )
-
-    def forward(self, x):
-        B, S, _ = x.shape
-        x_embed = self.input_projection(x) 
-        x = x_embed + self.pos_embed[:, :S, :] 
-        x = self.embed_dropout(x)
-        
-        h = self.transformer_encoder(x) 
-
+        h, _ = self.gru(x)
+        B = h.size(0)
         q = self.pool_query.expand(B, -1, -1)
         ctx, _ = self.pool_attn(q, self.pool_ln(h), self.pool_ln(h))
-        ctx = ctx.squeeze(1) 
-
-        out = self.head(ctx) # <--- 使用新的 Head
-        out = out.view(B, self.horizon, 2)
-        
-        out = torch.cumsum(out, dim=1)
-        
-        return out
-
+        out = self.head(ctx.squeeze(1))
+        out = out.view(B, -1, 2)
+        return torch.cumsum(out, dim=1)
 
 # ============================================================================
 # LOSS (YOUR PROVEN TEMPORAL HUBER)
@@ -884,10 +813,6 @@ class TemporalHuber(nn.Module):
         
         return (huber * mask).sum() / (mask.sum() + 1e-8)
 
-# ============================================================================
-# TRAINING
-# ============================================================================
-
 def prepare_targets(batch_dx, batch_dy, max_h):
     tensors_x, tensors_y, masks = [], [], []
     
@@ -905,54 +830,35 @@ def prepare_targets(batch_dx, batch_dy, max_h):
     targets = torch.stack([torch.stack(tensors_x), torch.stack(tensors_y)], dim=-1)
     return targets, torch.stack(masks)
 
-def compute_val_rmse(model, X_val, y_val_dx, y_val_dy, horizon, device, batch_size=256):
-    """
-    Compute validation RMSE (Root Mean Squared Error) for 2D trajectory prediction.
-    Returns the average Euclidean distance error across all predictions.
-    """
-    model.eval()
-    all_errors = []
+
+def rmse(pred, target, mask):
+    # Convert tensors to CPU if they're on CUDA before converting to numpy
+    if isinstance(pred, torch.Tensor):
+        pred = pred.cpu().detach().numpy()
+    else:
+        pred = np.asarray(pred)
     
-    with torch.no_grad():
-        for i in range(0, len(X_val), batch_size):
-            end = min(i + batch_size, len(X_val))
-            bx = torch.tensor(np.stack(X_val[i:end]).astype(np.float32)).to(device)
-            
-            # Get predictions
-            pred = model(bx).cpu().numpy()  # Shape: (batch, horizon, 2)
-            
-            # Process each sample in the batch
-            for j, idx in enumerate(range(i, end)):
-                dx_true = y_val_dx[idx]
-                dy_true = y_val_dy[idx]
-                n_steps = len(dx_true)
-                
-                # Extract predictions for this sample
-                dx_pred = pred[j, :n_steps, 0]
-                dy_pred = pred[j, :n_steps, 1]
-                
-                # Compute Euclidean distance for each time step
-                sq_errors = (dx_pred - dx_true) ** 2 + (dy_pred - dy_true) ** 2
-                all_errors.extend(sq_errors)
+    if isinstance(target, torch.Tensor):
+        target = target.cpu().detach().numpy()
+    else:
+        target = np.asarray(target)
     
-    # Return RMSE
-    return np.sqrt(np.mean(all_errors))
+    if isinstance(mask, torch.Tensor):
+        mask = mask.cpu().detach().numpy()
+    else:
+        mask = np.asarray(mask)
+    
+    err_sq = np.sum((pred - target) ** 2, axis=-1)  # (B, H)
+    return float(np.sqrt(np.sum(err_sq * mask) / (2 * np.sum(mask))))
 
 def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy, 
                 input_dim, horizon, config):
     device = config.DEVICE
+    model = JointSeqModel(input_dim, horizon).to(device)
     
-    model = STTransformer(
-        input_dim=input_dim,
-        hidden_dim=config.HIDDEN_DIM,
-        horizon=horizon,
-        window_size=config.WINDOW_SIZE,
-        n_heads=config.N_HEADS,
-        n_layers=config.N_LAYERS
-    ).to(device)
     criterion = TemporalHuber(delta=0.5, time_decay=0.03)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5, verbose=False)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
     
     train_batches = []
     for i in range(0, len(X_train), config.BATCH_SIZE):
@@ -977,6 +883,7 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
         val_batches.append((bx, by, bm))
     
     best_loss, best_state, bad = float('inf'), None, 0
+    best_score = float('inf')
     
     for epoch in range(1, config.EPOCHS + 1):
         model.train()
@@ -993,22 +900,32 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
         
         model.eval()
         val_losses = []
+        bys, preds, masks = [], [], []
         with torch.no_grad():
             for bx, by, bm in val_batches:
                 bx, by, bm = bx.to(device), by.to(device), bm.to(device)
                 pred = model(bx)
                 val_losses.append(criterion(pred, by, bm).item())
+                bys.append(by)
+                preds.append(pred)
+                masks.append(bm)
         
         train_loss, val_loss = np.mean(train_losses), np.mean(val_losses)
         scheduler.step(val_loss)
+
+        bys = torch.cat(bys)      # torch.Tensor
+        preds = torch.cat(preds)  # torch.Tensor
+        masks = torch.cat(masks)  # torch.Tensor
+        score = rmse(preds, bys, masks)
         
         if epoch % 10 == 0:
-            print(f"  Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}")
+            print(f"  Epoch {epoch}: train={train_loss:.4f}, val={val_loss:.4f}, score={score:.4f}")
         
         if val_loss < best_loss:
             best_loss = val_loss
             best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
             bad = 0
+            best_score = score
         else:
             bad += 1
             if bad >= config.PATIENCE:
@@ -1018,7 +935,7 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
     if best_state:
         model.load_state_dict(best_state)
     
-    return model, best_loss
+    return model, best_loss, best_score
 
 import kaggle_evaluation.nfl_inference_server
 import warnings
@@ -1076,13 +993,7 @@ class NFLPredictor:
                     scaler = None
 
                 # instantiate model and load state
-                model = STTransformer(
-                        input_dim=input_dim,
-                        hidden_dim=config.HIDDEN_DIM,
-                        horizon=config.MAX_FUTURE_HORIZON,
-                        window_size=config.WINDOW_SIZE,
-                        n_heads=config.N_HEADS,
-                        n_layers=config.N_LAYERS).to(config.DEVICE)
+                model = JointSeqModel(config.HIDDEN_DIM, config.MAX_FUTURE_HORIZON).to(config.DEVICE)
                 try:
                     state = torch.load(model_path, map_location='cpu')
                     model.load_state_dict(state)
@@ -1102,83 +1013,57 @@ class NFLPredictor:
         # If not loading, proceed with training and data preparation
         # 1. Load Data
         print("[1/4] Loading data for training...")
-        train_input_files = [config.DATA_DIR / f"train/input_2023_w{w:02d}.csv" for w in range(1, 19)]
-        train_output_files = [config.DATA_DIR / f"train/output_2023_w{w:02d}.csv" for w in range(1, 19)]
-        if Config.DEBUG:            
-            # Load a small amount of data to quickly get play IDs
-            sample_train_input = pd.read_csv(train_input_files[0])
-            sample_train_output = pd.read_csv(train_output_files[0])
-            # Get the first 100 unique plays (game_id, play_id combinations)
-            sample_plays = sample_train_output[['game_id', 'play_id']].drop_duplicates().head(100)
-            # Filter the full data for only these plays
-            train_input = pd.concat([pd.read_csv(f) for f in train_input_files if f.exists()])
-            train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
-            # Perform the actual filtering to get a small, but complete, set of plays
-            train_input = train_input.merge(sample_plays, on=['game_id', 'play_id'], how='inner')
-            train_output = train_output.merge(sample_plays, on=['game_id', 'play_id'], how='inner')
-            print(f"✓ Reduced to {len(sample_plays)} unique plays.")
-        else:
-            train_input = pd.concat([pd.read_csv(f) for f in train_input_files if f.exists()])
-            train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
+        fine_cnt = 19 if not config.DEBUG else 2
+        train_input_files = [config.DATA_DIR / f"train/input_2023_w{w:02d}.csv" for w in range(1, fine_cnt)]
+        train_output_files = [config.DATA_DIR / f"train/output_2023_w{w:02d}.csv" for w in range(1, fine_cnt)]
+        train_input = pd.concat([pd.read_csv(f) for f in train_input_files if f.exists()])
+        train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
 
-        # 2. Prepare Sequences and Train Feature Objects
-        print("\n[2/4] Preparing geometric sequences and feature scalers...")
+        print("\n[2/4] Preparing geometric sequences...")
         result = prepare_sequences_geometric(
             train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
         )
         sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler = result
-
-        # Store feature objects for later inference
-        self.route_kmeans = route_kmeans
-        self.route_scaler = route_scaler
         
         sequences = list(sequences)
         targets_dx = list(targets_dx)
         targets_dy = list(targets_dy)
-
-        # Ensure model dir exists
-        config.MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-        # 3. Train Models
+        self.route_kmeans = route_kmeans
+        self.route_scaler = route_scaler
+        
+        # Train
         print("\n[3/4] Training geometric models...")
         groups = np.array([d['game_id'] for d in sequence_ids])
         gkf = GroupKFold(n_splits=config.N_FOLDS)
-
+        
         self.models, self.scalers = [], []
+        scores = []
         fold_losses = []
-        fold_rmses = []
-
+        
         for fold, (tr, va) in enumerate(gkf.split(sequences, groups=groups), 1):
-            # ... (rest of the fold training logic, exactly as in the original main()) ...
+            print(f"\n{'='*60}")
+            print(f"Fold {fold}/{config.N_FOLDS}")
+            print(f"{'='*60}")
+            
             X_tr = [sequences[i] for i in tr]
             X_va = [sequences[i] for i in va]
             y_tr_dx = [targets_dx[i] for i in tr]
             y_va_dx = [targets_dx[i] for i in va]
             y_tr_dy = [targets_dy[i] for i in tr]
             y_va_dy = [targets_dy[i] for i in va]
+            
             scaler = StandardScaler()
             scaler.fit(np.vstack([s for s in X_tr]))
+            
             X_tr_sc = [scaler.transform(s) for s in X_tr]
             X_va_sc = [scaler.transform(s) for s in X_va]
-            model, loss = train_model(
+            
+            model, loss, score = train_model(
                 X_tr_sc, y_tr_dx, y_tr_dy,
                 X_va_sc, y_va_dx, y_va_dy,
                 X_tr[0].shape[-1], config.MAX_FUTURE_HORIZON, config
             )
-            
-            # Compute validation RMSE
-            val_rmse = compute_val_rmse(
-                model, X_va_sc, y_va_dx, y_va_dy, 
-                config.MAX_FUTURE_HORIZON, config.DEVICE, config.BATCH_SIZE
-            )
-            
-            self.models.append(model)
-            self.scalers.append(scaler)
-            fold_losses.append(loss)
-            fold_rmses.append(val_rmse)
-            
-            print(f"\n✓ Fold {fold} - Loss: {loss:.5f}, Validation RMSE: {val_rmse:.5f}")
-            # Persist fold artifacts if requested
+
             if config.SAVE_ARTIFACTS:
                 try:
                     model_path = config.MODEL_DIR / f"model_fold{fold}.pt"
@@ -1191,34 +1076,28 @@ class NFLPredictor:
                     print(f"  Saved artifacts for fold {fold} -> {model_path.name}, {scaler_path.name}")
                 except Exception as e:
                     print(f"  Warning: failed to save artifacts for fold {fold}:", e)
+            
+            self.models.append(model)
+            self.scalers.append(scaler)
 
-        # Print summary statistics across all folds
-        print("\n" + "="*60)
-        print("CROSS-VALIDATION SUMMARY")
-        print("="*60)
-        avg_loss = np.mean(fold_losses)
-        std_loss = np.std(fold_losses)
-        avg_rmse = np.mean(fold_rmses)
-        std_rmse = np.std(fold_rmses)
+            scores.append(score)
+            fold_losses.append(loss)
+            
+            print(f"\n✓ Fold {fold} - Loss: {loss:.5f}, Validation RMSE:{score:.5f}")
         
-        print(f"Average Loss:           {avg_loss:.5f} ± {std_loss:.5f}")
-        print(f"Average Validation RMSE: {avg_rmse:.5f} ± {std_rmse:.5f}")
-        print(f"\nPer-Fold Results:")
-        for i, (loss, rmse) in enumerate(zip(fold_losses, fold_rmses), 1):
-            print(f"  Fold {i}: Loss={loss:.5f}, RMSE={rmse:.5f}")
-        print("="*60 + "\n")
+        avg_rmse = np.mean(scores)
+        avg_loss = np.mean(fold_losses)
+        print(f"AVG valid rmse:{avg_rmse}")
+        print(f"AVG avg_loss:{avg_loss}")
 
-        # Ensure all models are in eval mode (best practice)
-        # Optionally persist route clustering objects
         if config.SAVE_ARTIFACTS:
             try:
-                with open(config.MODEL_DIR / "route_kmeans.pkl", "wb") as f:
-                    pickle.dump(self.route_kmeans, f)
-                with open(config.MODEL_DIR / "route_scaler.pkl", "wb") as f:
-                    pickle.dump(self.route_scaler, f)
-                print(f"✓ Saved route artifacts -> route_kmeans.pkl, route_scaler.pkl")
+                text = {"avg_rmse":avg_rmse, "avg_loss":avg_loss}
+                with open(config.LOAD_DIR + "/train_results.json", "w") as f:
+                    import json
+                    json.dump(text, f)
             except Exception as e:
-                print("Warning: failed to save route artifacts:", e)
+                print("Warning: failed to save scores:", e)
 
         for model in self.models:
             model.eval()
@@ -1229,60 +1108,57 @@ class NFLPredictor:
         """Inference function called by the API for each time step."""
         
         # Convert Polars DataFrames to Pandas, as the original notebook uses Pandas extensively
-        test_input_pd = test_input.to_pandas()
-        test_template_pd = test.to_pandas()
+        test_input = test_input.to_pandas()
+        test_template = test.to_pandas()
         
-        # 1. Prepare Test Sequences
-        # Use the stored feature objects (route_kmeans, route_scaler) for inference
+        print("\n[4/4] Creating test predictions...")
         test_seq, test_ids, test_geo_x, test_geo_y = prepare_sequences_geometric(
-            test_input_pd, test_template=test_template_pd, is_training=False,
+            test_input, test_template=test_template, is_training=False, 
             window_size=self.config.WINDOW_SIZE,
             route_kmeans=self.route_kmeans, route_scaler=self.route_scaler
         )
-
+        
         X_test = list(test_seq)
         x_last = np.array([s[-1, 0] for s in X_test])
         y_last = np.array([s[-1, 1] for s in X_test])
-
-        # 2. Ensemble Prediction
+        
+        # Ensemble
         all_preds = []
-        H = self.config.MAX_FUTURE_HORIZON
-
+        
         for model, sc in zip(self.models, self.scalers):
             X_sc = [sc.transform(s) for s in X_test]
             X_t = torch.tensor(np.stack(X_sc).astype(np.float32)).to(self.config.DEVICE)
-
+            
+            model.eval()
             with torch.no_grad():
                 preds = model(X_t).cpu().numpy()
-
+            
             all_preds.append(preds)
-
+        
         ens_preds = np.mean(all_preds, axis=0)
-
-        # 3. Format Submission (Corrected for API)
+        
+        # Submission
         rows = []
+        H = ens_preds.shape[1]
+        
         for i, sid in enumerate(test_ids):
-            # The template DataFrame 'test' contains the info needed to map predictions
-            fids = test_template_pd[
-                (test_template_pd['game_id'] == sid['game_id']) &
-                (test_template_pd['play_id'] == sid['play_id']) &
-                (test_template_pd['nfl_id'] == sid['nfl_id'])
+            fids = test_template[
+                (test_template['game_id'] == sid['game_id']) &
+                (test_template['play_id'] == sid['play_id']) &
+                (test_template['nfl_id'] == sid['nfl_id'])
             ]['frame_id'].sort_values().tolist()
             
             for t, fid in enumerate(fids):
                 tt = min(t, H - 1)
-                px = np.clip(x_last[i] + ens_preds[i, tt, 0], 0, self.config.FIELD_X_MAX)
-                py = np.clip(y_last[i] + ens_preds[i, tt, 1], 0, self.config.FIELD_Y_MAX)
-
-                # DO NOT include 'id' in the rows dict or final DataFrame
-                # The API will handle the row IDs based on the provided 'test' DataFrame
+                px = np.clip(x_last[i] + ens_preds[i, tt, 0], 0, 120)
+                py = np.clip(y_last[i] + ens_preds[i, tt, 1], 0, 53.3)
+                
                 rows.append({
+                    'id': f"{sid['game_id']}_{sid['play_id']}_{sid['nfl_id']}_{fid}",
                     'x': px,
                     'y': py
                 })
-
-        # The final returned DataFrame MUST only contain 'x' and 'y' columns, 
-        # matching the order of rows in the input 'test' DataFrame.
+        
         submission = pd.DataFrame(rows)
         return submission
 
@@ -1298,15 +1174,15 @@ def predict(test: pl.DataFrame, test_input: pl.DataFrame) -> pl.DataFrame | pd.D
 
 inference_server = kaggle_evaluation.nfl_inference_server.NFLInferenceServer(predict)
 
-if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
-    # This runs when Kaggle evaluates your submission on the hidden test set
-    inference_server.serve()
-else:
-    # This runs when you run the notebook locally (e.g., in a Kaggle session)
-    # The original main() logic should be executed once in the __init__ of NFLPredictor
-    # to train and save the model/weights which would be loaded here in a real scenario.
-    # For this script, we'll run a local gateway with the training included in __init__.
-    # Note: The provided files are .csv, not the final directory structure, so this
-    # local run might require custom paths depending on the exact setup.
-    # Based on the demo, we use the provided structure:
-    inference_server.run_local_gateway(('/kaggle/input/nfl-big-data-bowl-2026-prediction/',))
+# if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
+#     # This runs when Kaggle evaluates your submission on the hidden test set
+#     inference_server.serve()
+# else:
+#     # This runs when you run the notebook locally (e.g., in a Kaggle session)
+#     # The original main() logic should be executed once in the __init__ of NFLPredictor
+#     # to train and save the model/weights which would be loaded here in a real scenario.
+#     # For this script, we'll run a local gateway with the training included in __init__.
+#     # Note: The provided files are .csv, not the final directory structure, so this
+#     # local run might require custom paths depending on the exact setup.
+#     # Based on the demo, we use the provided structure:
+#     inference_server.run_local_gateway(('/kaggle/input/nfl-big-data-bowl-2026-prediction/',))
