@@ -19,6 +19,7 @@ from
 https://www.kaggle.com/code/jinliangbi/nfl-big-data-bowl-2026-geometry-gnn-930cf7?scriptVersionId=273127191
 """
 
+from scipy.special import lmbda
 import torch
 import torch.nn as nn
 import numpy as np
@@ -28,6 +29,7 @@ from tqdm.auto import tqdm
 import warnings
 import os
 import pickle
+from datetime import datetime
 
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import GroupKFold
@@ -53,7 +55,7 @@ class Config:
     LOAD_DIR = '/kaggle/input/nfl-bdb-2026/nfl-gnn-a43/outputs/models'
   
     SEED = 42
-    N_FOLDS = 5
+    N_FOLDS = 10
     BATCH_SIZE = 256
     EPOCHS = 200
     PATIENCE = 30
@@ -1012,14 +1014,15 @@ class NFLPredictor:
 
         # If not loading, proceed with training and data preparation
         # 1. Load Data
-        print("[1/4] Loading data for training...")
         fine_cnt = 19 if not config.DEBUG else 2
+        timestamp = lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        print(f"[1/4] [{timestamp()}] Loading {fine_cnt} files for training...")
         train_input_files = [config.DATA_DIR / f"train/input_2023_w{w:02d}.csv" for w in range(1, fine_cnt)]
         train_output_files = [config.DATA_DIR / f"train/output_2023_w{w:02d}.csv" for w in range(1, fine_cnt)]
         train_input = pd.concat([pd.read_csv(f) for f in train_input_files if f.exists()])
         train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
 
-        print("\n[2/4] Preparing geometric sequences...")
+        print(f"\n[2/4] [{timestamp()}] Preparing geometric sequences...")
         result = prepare_sequences_geometric(
             train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
         )
@@ -1032,7 +1035,7 @@ class NFLPredictor:
         self.route_scaler = route_scaler
         
         # Train
-        print("\n[3/4] Training geometric models...")
+        print(f"\n[3/4] [{timestamp()}] Training geometric models...")
         groups = np.array([d['game_id'] for d in sequence_ids])
         gkf = GroupKFold(n_splits=config.N_FOLDS)
         
@@ -1090,6 +1093,7 @@ class NFLPredictor:
         print(f"AVG valid rmse:{avg_rmse}")
         print(f"AVG avg_loss:{avg_loss}")
 
+        print(f"\n[4/4] [{timestamp()}] save models")
         if config.SAVE_ARTIFACTS:
             try:
                 text = {"avg_rmse":avg_rmse, "avg_loss":avg_loss}
