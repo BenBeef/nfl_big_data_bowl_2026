@@ -754,6 +754,7 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
         })
     
     print(f"✓ Created {len(sequences)} sequences")
+    print(f"Number of feature {len(feature_cols)} sequences")
     
     if is_training:
         return (sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, 
@@ -939,6 +940,30 @@ def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy,
     
     return model, best_loss, best_score
 
+def save_pickle(data, file_path):
+    # Save result as a pickle file for later use or debugging
+    try:
+        with open(file_path, "wb") as f:
+            pickle.dump(data, f)
+        print(f"✓ Saved training sequence result to {file_path}")
+    except Exception as e:
+        print(f"Failed to save training sequence result: {e}")
+
+
+def read_pickle(file_path):
+    # Load result from a pickle file
+    try:
+        with open(file_path, "rb") as f:
+            data = pickle.load(f)
+        print(f"✓ Successfully loaded data from {file_path}")
+        return data
+    except FileNotFoundError:
+        print(f"File not found: {file_path}")
+        return None
+    except Exception as e:
+        print(f"Failed to load data from pickle file: {e}")
+        return None
+
 import kaggle_evaluation.nfl_inference_server
 import warnings
 import polars as pl # Import Polars for the predict function signature
@@ -1026,6 +1051,7 @@ class NFLPredictor:
         result = prepare_sequences_geometric(
             train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
         )
+        save_pickle(result, './feature_no_gnn_result.pkl')
         sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler = result
         
         sequences = list(sequences)
@@ -1184,15 +1210,15 @@ def predict(test: pl.DataFrame, test_input: pl.DataFrame) -> pl.DataFrame | pd.D
 
 inference_server = kaggle_evaluation.nfl_inference_server.NFLInferenceServer(predict)
 
-if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
-    # This runs when Kaggle evaluates your submission on the hidden test set
-    inference_server.serve()
-else:
-    # This runs when you run the notebook locally (e.g., in a Kaggle session)
-    # The original main() logic should be executed once in the __init__ of NFLPredictor
-    # to train and save the model/weights which would be loaded here in a real scenario.
-    # For this script, we'll run a local gateway with the training included in __init__.
-    # Note: The provided files are .csv, not the final directory structure, so this
-    # local run might require custom paths depending on the exact setup.
-    # Based on the demo, we use the provided structure:
-    inference_server.run_local_gateway(('/kaggle/input/nfl-big-data-bowl-2026-prediction/',))
+# if os.getenv('KAGGLE_IS_COMPETITION_RERUN'):
+#     # This runs when Kaggle evaluates your submission on the hidden test set
+#     inference_server.serve()
+# else:
+#     # This runs when you run the notebook locally (e.g., in a Kaggle session)
+#     # The original main() logic should be executed once in the __init__ of NFLPredictor
+#     # to train and save the model/weights which would be loaded here in a real scenario.
+#     # For this script, we'll run a local gateway with the training included in __init__.
+#     # Note: The provided files are .csv, not the final directory structure, so this
+#     # local run might require custom paths depending on the exact setup.
+#     # Based on the demo, we use the provided structure:
+#     inference_server.run_local_gateway(('/kaggle/input/nfl-big-data-bowl-2026-prediction/',))
