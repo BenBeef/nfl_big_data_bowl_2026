@@ -64,6 +64,15 @@ class Config:
     WINDOW_SIZE = 10
     HIDDEN_DIM = 128
     MAX_FUTURE_HORIZON = 94
+
+    # === Transformer 超参数 ===
+    N_HEADS = 4  # Transformer 的注意力头数
+    N_LAYERS = 2 # Transformer 编码器的层数
+    
+    # === 新增：ResidualMLP Head 超参数 ===
+    MLP_HIDDEN_DIM = 256 # MLP 头的内部隐藏维度
+    N_RES_BLOCKS = 2     # 残差块的数量
+    # ==================================
     
     FIELD_X_MIN, FIELD_X_MAX = 0.0, 120.0
     FIELD_Y_MIN, FIELD_Y_MAX = 0.0, 53.3
@@ -791,6 +800,118 @@ class JointSeqModel(nn.Module):
         out = out.view(B, -1, 2)
         return torch.cumsum(out, dim=1)
 
+
+class ResidualBlock(nn.Module):
+    """
+    一个标准的残差块：FFN + 快捷连接
+    """
+    def __init__(self, dim, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.ffn = nn.Sequential(
+            nn.Linear(dim, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, dim),
+            nn.Dropout(dropout)
+        )
+        self.norm = nn.LayerNorm(dim)
+    
+    def forward(self, x):
+        # Pre-normalization
+        return x + self.ffn(self.norm(x))
+
+class ResidualMLPHead(nn.Module):
+    """
+    替换原有的 nn.Sequential Head
+    """
+    def __init__(self, input_dim, hidden_dim, output_dim, n_res_blocks=2, dropout=0.2):
+        super().__init__()
+        # 1. 从 context_dim (128) 投影到 mlp_hidden_dim (256)
+        self.input_layer = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.GELU()
+        )
+        
+        # 2. 一系列的残差块 (在 256 维度上操作)
+        self.residual_blocks = nn.Sequential(
+            *[ResidualBlock(hidden_dim, hidden_dim * 2, dropout) for _ in range(n_res_blocks)]
+        )
+        
+        # 3. 最后的 LayerNorm 和输出投影
+        self.output_norm = nn.LayerNorm(hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, output_dim)
+    
+    def forward(self, x):
+        x = self.input_layer(x)
+        x = self.residual_blocks(x)
+        x = self.output_norm(x)
+        x = self.output_layer(x)
+        return x
+
+class STTransformer(nn.Module):
+    """
+    Spatio-Temporal Transformer
+    """
+    def __init__(self, input_dim, hidden_dim, horizon, window_size, n_heads, n_layers, dropout=0.1):
+        super().__init__()
+        config = Config() # 获取 MLP 的超参数
+        self.horizon = horizon
+        self.hidden_dim = hidden_dim
+
+        # 1. Spatio: 特征嵌入
+        self.input_projection = nn.Linear(input_dim, hidden_dim)
+        
+        # 2. Temporal: 可学习的位置编码
+        self.pos_embed = nn.Parameter(torch.randn(1, window_size, hidden_dim)) 
+        self.embed_dropout = nn.Dropout(dropout)
+
+        # 3. Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_dim,
+            nhead=n_heads,
+            dim_feedforward=hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            activation='gelu'
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=n_layers
+        )
+
+        # 4. 池化 (复用你成熟的 Attention Pooling 机制)
+        self.pool_ln = nn.LayerNorm(hidden_dim)
+        self.pool_attn = nn.MultiheadAttention(hidden_dim, num_heads=n_heads, batch_first=True)
+        self.pool_query = nn.Parameter(torch.randn(1, 1, hidden_dim)) 
+
+        # 5. 输出 Head (!!! 已替换为 ResidualMLPHead !!!)
+        self.head = ResidualMLPHead(
+            input_dim=hidden_dim,                   # 128
+            hidden_dim=config.MLP_HIDDEN_DIM,       # 256
+            output_dim=horizon * 2,                 # 188
+            n_res_blocks=config.N_RES_BLOCKS,       # 2
+            dropout=0.2
+        )
+
+    def forward(self, x):
+        B, S, _ = x.shape
+        x_embed = self.input_projection(x) 
+        x = x_embed + self.pos_embed[:, :S, :] 
+        x = self.embed_dropout(x)
+        
+        h = self.transformer_encoder(x) 
+
+        q = self.pool_query.expand(B, -1, -1)
+        ctx, _ = self.pool_attn(q, self.pool_ln(h), self.pool_ln(h))
+        ctx = ctx.squeeze(1) 
+
+        out = self.head(ctx) # <--- 使用新的 Head
+        out = out.view(B, self.horizon, 2)
+        
+        out = torch.cumsum(out, dim=1)
+        
+        return out
+
 # ============================================================================
 # LOSS (YOUR PROVEN TEMPORAL HUBER)
 # ============================================================================
@@ -857,8 +978,15 @@ def rmse(pred, target, mask):
 def train_model(X_train, y_train_dx, y_train_dy, X_val, y_val_dx, y_val_dy, 
                 input_dim, horizon, config):
     device = config.DEVICE
-    model = JointSeqModel(input_dim, horizon).to(device)
     
+    model = STTransformer(
+        input_dim=input_dim,
+        hidden_dim=config.HIDDEN_DIM,
+        horizon=horizon,
+        window_size=config.WINDOW_SIZE,
+        n_heads=config.N_HEADS,
+        n_layers=config.N_LAYERS
+    ).to(device)
     criterion = TemporalHuber(delta=0.5, time_decay=0.03)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
@@ -1048,10 +1176,11 @@ class NFLPredictor:
         train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
 
         print(f"\n[2/4] [{timestamp()}] Preparing geometric sequences...")
-        result = prepare_sequences_geometric(
-            train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
-        )
-        save_pickle(result, './feature_no_gnn_result.pkl')
+        # result = prepare_sequences_geometric(
+        #     train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
+        # )
+        # save_pickle(result, './feature_no_gnn_result.pkl')
+        result = read_pickle('./feature_167_reuslt.pkl')
         sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler = result
         
         sequences = list(sequences)
