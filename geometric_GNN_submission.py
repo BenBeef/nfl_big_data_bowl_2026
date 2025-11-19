@@ -295,11 +295,15 @@ def extract_route_patterns(input_df, kmeans=None, scaler=None, fit=True):
         positions = traj[['x', 'y']].values
         speeds = traj['s'].values
         
+        # 路程
         total_dist = np.sum(np.sqrt(np.diff(positions[:, 0])**2 + np.diff(positions[:, 1])**2))
+        # 位移
         displacement = np.sqrt((positions[-1, 0] - positions[0, 0])**2 + 
                               (positions[-1, 1] - positions[0, 1])**2)
+        # 直行率 = 位移/路程
         straightness = displacement / (total_dist + 0.1)
         
+        # 行动夹角
         angles = np.arctan2(np.diff(positions[:, 1]), np.diff(positions[:, 0]))
         if len(angles) > 1:
             angle_changes = np.abs(np.diff(angles))
@@ -308,8 +312,10 @@ def extract_route_patterns(input_df, kmeans=None, scaler=None, fit=True):
         else:
             max_turn = mean_turn = 0
         
+        # 各个队员的均速
         speed_mean = speeds.mean()
         speed_change = speeds[-1] - speeds[0] if len(speeds) > 1 else 0
+        # 位移
         dx = positions[-1, 0] - positions[0, 0]
         dy = positions[-1, 1] - positions[0, 1]
         
