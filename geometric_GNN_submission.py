@@ -19,6 +19,7 @@ from
 https://www.kaggle.com/code/jinliangbi/nfl-big-data-bowl-2026-geometry-gnn-930cf7?scriptVersionId=273127191
 """
 
+from typing import * 
 from scipy.special import lmbda
 import torch
 import torch.nn as nn
@@ -29,6 +30,7 @@ from tqdm.auto import tqdm
 import warnings
 import os
 import pickle
+import json
 from datetime import datetime
 
 from sklearn.preprocessing import StandardScaler
@@ -773,7 +775,7 @@ def prepare_sequences_geometric(input_df, output_df=None, test_template=None,
     
     if is_training:
         return (sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, 
-                geo_endpoints_x, geo_endpoints_y, route_kmeans, route_scaler)
+                geo_endpoints_x, geo_endpoints_y, route_kmeans, route_scaler, feature_cols)
     return sequences, sequence_ids, geo_endpoints_x, geo_endpoints_y
 
 # ============================================================================
@@ -1105,6 +1107,13 @@ import polars as pl # Import Polars for the predict function signature
 # Move all utility functions (get_velocity, height_to_feet, compute_geometric_endpoint, etc.)
 # and the Config/set_seed outside the class but above it, or make them static methods.
 
+def select_features(all_features:List[str], selecteds:List[str], sequences):
+    """
+    """
+    idx = [i for i, fe in enumerate(all_features) if fe in selecteds]
+    sequences = [seq[:, idx] for seq in sequences] 
+    return sequences
+
 class NFLPredictor:
     def __init__(self):
         warnings.filterwarnings('ignore')
@@ -1182,13 +1191,57 @@ class NFLPredictor:
         train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
 
         print(f"\n[2/4] [{timestamp()}] Preparing geometric sequences...")
-        # result = prepare_sequences_geometric(
-        #     train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
-        # )
-        # save_pickle(result, './feature_no_gnn_result.pkl')
+        result = prepare_sequences_geometric(
+            train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
+        )
+        save_pickle(result, './feature_167_reuslt.pkl')
         result = read_pickle('./feature_167_reuslt.pkl')
-        sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler = result
-        
+
+        target_features = [
+            'x', 'y', 's', 'a', 'o', 'dir', 'frame_id', 'ball_land_x', 'ball_land_y',
+        'player_height_feet', 'player_weight', 'height_inches', 'bmi',
+        'velocity_x', 'velocity_y', 'acceleration_x', 'acceleration_y',
+        'momentum_x', 'momentum_y', 'kinetic_energy',
+        'speed_squared', 'accel_magnitude', 'orientation_diff',
+        'is_offense', 'is_defense', 'is_receiver', 'is_coverage', 'is_passer',
+        'role_targeted_receiver', 'role_defensive_coverage', 'role_passer', 'side_offense',
+        'distance_to_ball', 'dist_to_ball', 'dist_squared', 'angle_to_ball', 
+        'ball_direction_x', 'ball_direction_y', 'closing_speed_ball',
+        'velocity_toward_ball', 'velocity_alignment', 'angle_diff',
+        'nearest_opp_dist', 'closing_speed', 'num_nearby_opp_3', 'num_nearby_opp_5',
+        'mirror_wr_vx', 'mirror_wr_vy', 'mirror_offset_x', 'mirror_offset_y',
+        'pressure', 'under_pressure', 'pressure_x_speed', 
+        'mirror_similarity', 'mirror_offset_dist', 'mirror_alignment',
+        'route_pattern', 'traj_straightness', 'traj_max_turn', 'traj_mean_turn',
+        'traj_depth', 'traj_width', 'speed_mean', 'speed_change',
+        'gnn_ally_dx_mean', 'gnn_ally_dy_mean', 'gnn_ally_dvx_mean', 'gnn_ally_dvy_mean',
+        'gnn_opp_dx_mean', 'gnn_opp_dy_mean', 'gnn_opp_dvx_mean', 'gnn_opp_dvy_mean',
+        'gnn_ally_cnt', 'gnn_opp_cnt',
+        'gnn_ally_dmin', 'gnn_ally_dmean', 'gnn_opp_dmin', 'gnn_opp_dmean',
+        'gnn_d1', 'gnn_d2', 'gnn_d3',
+        # "x_lag1", "y_lag1", "velocity_x_lag1", "velocity_y_lag1", "s_lag1", "a_lag1", "x_lag2", "y_lag2", 
+        # "velocity_x_lag2", "velocity_y_lag2", "s_lag2", "a_lag2", "x_lag3", "y_lag3", "velocity_x_lag3", "velocity_y_lag3",
+        # "s_lag3", "a_lag3", "x_lag4", "y_lag4", "velocity_x_lag4", "velocity_y_lag4", "s_lag4", "a_lag4", "x_lag5", "y_lag5",
+        # "velocity_x_lag5", "velocity_y_lag5", "s_lag5", "a_lag5", "x_rolling_mean_3", "x_rolling_std_3", "y_rolling_mean_3", 
+        # "y_rolling_std_3", "velocity_x_rolling_mean_3", "velocity_x_rolling_std_3", "velocity_y_rolling_mean_3", 
+        # "velocity_y_rolling_std_3", "s_rolling_mean_3", "s_rolling_std_3", "x_rolling_mean_5", "x_rolling_std_5", 
+        # "y_rolling_mean_5", "y_rolling_std_5", "velocity_x_rolling_mean_5", "velocity_x_rolling_std_5", 
+        # "velocity_y_rolling_mean_5", "velocity_y_rolling_std_5", "s_rolling_mean_5", "s_rolling_std_5", 
+        # "velocity_x_delta", "velocity_y_delta", "velocity_x_ema", "velocity_y_ema", "speed_ema", "max_play_duration", 
+        # "frame_time", "progress_ratio", "time_remaining", "frames_remaining", "expected_x_at_ball", "expected_y_at_ball",
+        # "error_from_ball_x", "error_from_ball_y", "error_from_ball", "time_squared", "weighted_dist_by_time", 
+        # "velocity_x_progress", "velocity_y_progress", "dist_scaled_by_progress", "speed_scaled_by_time_left", 
+        # "actual_play_length", "length_ratio", "geo_endpoint_x", "geo_endpoint_y", "geo_vector_x", "geo_vector_y", 
+        # "geo_distance", "geo_required_vx", "geo_required_vy", "geo_velocity_error_x", "geo_velocity_error_y", 
+        # "geo_velocity_error", "geo_required_ax", "geo_required_ay", "geo_alignment"
+        ]
+
+        sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler, all_features = result
+
+        target_features = all_features
+
+        sequences = select_features(all_features, target_features, sequences)
+
         sequences = list(sequences)
         targets_dx = list(targets_dx)
         targets_dy = list(targets_dy)
@@ -1259,7 +1312,6 @@ class NFLPredictor:
             try:
                 text = {"avg_rmse":avg_rmse, "avg_loss":avg_loss}
                 with open(config.MODEL_DIR / "train_results.json", "w") as f:
-                    import json
                     json.dump(text, f)
                 with open(config.MODEL_DIR / "route_kmeans.pkl", "wb") as f:
                     pickle.dump(self.route_kmeans, f)
