@@ -1238,6 +1238,218 @@ class NFLPredictor:
 
         sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler, all_features = result
 
+        # ========================================================================
+        # SHAP FEATURE SELECTION WITH ORIGINAL MODEL
+        # ========================================================================
+        print("\n[2.5/4] Using SHAP + Original Model for feature selection...")
+        
+        # Step 1: Prepare a small subset for SHAP analysis
+        print("  Step 1: Preparing SHAP analysis on subset...")
+        sample_size = len(sequences)
+        sample_indices = np.random.choice(len(sequences), sample_size, replace=False)
+        X_sample = np.array([sequences[i] for i in sample_indices])  # (sample_size, window_size, n_features)
+        y_sample_dx = [targets_dx[i] for i in sample_indices]
+        y_sample_dy = [targets_dy[i] for i in sample_indices]
+        
+        # Split into train and validation sets (80/20 split)
+        val_size = int(sample_size * 0.2)
+        val_indices = list(range(sample_size - val_size, sample_size))
+        train_indices = list(range(sample_size - val_size))
+        
+        X_train = X_sample[train_indices]
+        y_train_dx = [y_sample_dx[i] for i in train_indices]
+        y_train_dy = [y_sample_dy[i] for i in train_indices]
+        
+        X_val = X_sample[val_indices]
+        y_val_dx = [y_sample_dx[i] for i in val_indices]
+        y_val_dy = [y_sample_dy[i] for i in val_indices]
+        
+        print(f"  Train size: {len(train_indices)}, Val size: {len(val_indices)}")
+        
+        # Normalize features (fit on train, transform both)
+        scaler_shap = StandardScaler()
+        X_train_flat = X_train.reshape(X_train.shape[0], -1)
+        X_train_scaled = scaler_shap.fit_transform(X_train_flat)
+        X_train_scaled = X_train_scaled.reshape(X_train.shape)
+        
+        X_val_flat = X_val.reshape(X_val.shape[0], -1)
+        X_val_scaled = scaler_shap.transform(X_val_flat)
+        X_val_scaled = X_val_scaled.reshape(X_val.shape)
+        
+        # Step 2: Train a small auxiliary model for SHAP
+        print("  Step 2: Training auxiliary model for SHAP analysis...")
+        device = config.DEVICE
+        model_shap = STTransformer(
+            input_dim=X_train.shape[-1],
+            hidden_dim=128,
+            horizon=config.MAX_FUTURE_HORIZON,
+            window_size=config.WINDOW_SIZE,
+            n_heads=4,
+            n_layers=2
+        ).to(device)
+        
+        # Prepare training and validation batches
+        criterion = TemporalHuber(delta=0.5, time_decay=0.03)
+        optimizer = torch.optim.AdamW(model_shap.parameters(), lr=config.LEARNING_RATE, weight_decay=1e-5)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=5, factor=0.5)
+        
+        train_batches = []
+        for i in range(0, len(X_train), config.BATCH_SIZE):
+            end = min(i + config.BATCH_SIZE, len(X_train))
+            bx = torch.tensor(X_train_scaled[i:end].astype(np.float32)).to(device)
+            by, bm = prepare_targets(
+                [y_train_dx[j] for j in range(i, end)],
+                [y_train_dy[j] for j in range(i, end)],
+                config.MAX_FUTURE_HORIZON
+            )
+            train_batches.append((bx, by.to(device), bm.to(device)))
+        
+        val_batches = []
+        for i in range(0, len(X_val), config.BATCH_SIZE):
+            end = min(i + config.BATCH_SIZE, len(X_val))
+            bx = torch.tensor(X_val_scaled[i:end].astype(np.float32)).to(device)
+            by, bm = prepare_targets(
+                [y_val_dx[j] for j in range(i, end)],
+                [y_val_dy[j] for j in range(i, end)],
+                config.MAX_FUTURE_HORIZON
+            )
+            val_batches.append((bx, by.to(device), bm.to(device)))
+        
+        # Train with scheduler on validation loss
+        print("    Training SHAP model with scheduler on validation loss...")
+        best_val_loss = float('inf')
+        best_state = None
+        patience_counter = 0
+        
+        for epoch in range(100):
+            # Training phase
+            model_shap.train()
+            train_losses = []
+            for bx, by, bm in train_batches:
+                pred = model_shap(bx)
+                loss = criterion(pred, by, bm)
+                optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(model_shap.parameters(), 1.0)
+                optimizer.step()
+                train_losses.append(loss.item())
+            
+            # Validation phase
+            model_shap.eval()
+            val_losses = []
+            with torch.no_grad():
+                for bx, by, bm in val_batches:
+                    pred = model_shap(bx)
+                    val_loss = criterion(pred, by, bm)
+                    val_losses.append(val_loss.item())
+            
+            train_loss = np.mean(train_losses)
+            val_loss = np.mean(val_losses)
+            
+            # Step scheduler based on validation loss
+            scheduler.step(val_loss)
+            
+            # Save best model state and handle early stopping
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = {k: v.cpu().clone() for k, v in model_shap.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+            
+            if (epoch + 1) % 20 == 0:
+                print(f"      Epoch {epoch + 1}/100 - Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+            
+            if patience_counter >= 10:
+                print(f"      Early stopping at epoch {epoch + 1}, best val loss: {best_val_loss:.6f}")
+                break
+        
+        # Load best model state for feature importance computation
+        if best_state:
+            model_shap.load_state_dict(best_state)
+            print(f"    Loaded best model with val loss: {best_val_loss:.6f}")
+        else:
+            print("    Warning: No best model state found")
+        
+        print("    Model trained, computing SHAP values...")
+        
+        # Step 3: Compute feature importance using gradient-based method
+        print("  Step 3: Computing feature importance via gradients...")
+        model_shap.eval()
+        
+        n_features = X_sample.shape[-1]
+        window_size = X_sample.shape[1]
+        feature_importance = np.zeros(n_features)
+        
+        # Combine train and val scaled data for gradient computation
+        X_all_scaled = np.vstack([X_train_scaled, X_val_scaled])
+        
+        # Sample for gradient computation
+        shap_sample_size = min(100, len(X_all_scaled))
+        shap_indices = np.random.choice(len(X_all_scaled), shap_sample_size, replace=False)
+        
+        for idx in shap_indices:
+            x_single = X_all_scaled[idx:idx+1]
+            x_tensor = torch.tensor(x_single.astype(np.float32)).to(device)
+            x_tensor.requires_grad_(True)
+            
+            try:
+                pred = model_shap(x_tensor)
+                # Use final prediction as importance signal
+                loss = pred.sum()
+                loss.backward()
+                
+                if x_tensor.grad is not None:
+                    grad = np.abs(x_tensor.grad.cpu().detach().numpy()[0])
+                    feature_importance += grad.sum(axis=0)  # Sum across time dimension
+            except:
+                continue
+        
+        # Normalize
+        feature_importance /= max(1, shap_sample_size)
+        
+        # Reshape to per-feature importance (average across time steps if needed)
+        if len(feature_importance.shape) > 1:
+            feature_importance = feature_importance.mean(axis=0)
+        
+        # Create feature importance dataframe
+        feature_importance_df = pd.DataFrame({
+            'feature': all_features,
+            'importance': feature_importance
+        }).sort_values('importance', ascending=False)
+        
+        print("\n  Top 64 most important features (SHAP-based):")
+        print(feature_importance_df.head(64).to_string())
+        print(feature_importance_df['feature'].tolist()[:64])
+        
+        # Step 4: Select features based on importance
+        print("\n  Step 4: Selecting features...")
+        cumsum_importance = np.cumsum(feature_importance_df['importance'].values)
+        cumsum_importance_normalized = cumsum_importance / (cumsum_importance[-1] + 1e-8)
+        n_features_to_keep = np.argmax(cumsum_importance_normalized >= 0.85) + 1
+        
+        # Ensure reasonable bounds
+        n_features_to_keep = max(50, min(n_features_to_keep, 150))
+        
+        target_features = feature_importance_df.head(n_features_to_keep)['feature'].tolist()
+        
+        print(f"  ✓ Selected {len(target_features)} features (explaining ~85% importance)")
+        if n_features_to_keep > 0:
+            print(f"  Feature importance threshold: {feature_importance_df.iloc[n_features_to_keep-1]['importance']:.8f}")
+        
+        # Save SHAP importance results
+        try:
+            shap_result_path = config.MODEL_DIR / "feature_importance_shap.csv"
+            feature_importance_df.to_csv(shap_result_path, index=False)
+            print(f"  ✓ Saved feature importance to {shap_result_path}")
+        except Exception as e:
+            print(f"  Warning: Could not save feature importance: {e}")
+        
+        # Clean up auxiliary model
+        del model_shap
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
         sequences = select_features(all_features, target_features, sequences)
 
         sequences = list(sequences)

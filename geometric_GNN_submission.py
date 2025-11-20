@@ -1111,6 +1111,7 @@ def select_features(all_features:List[str], selecteds:List[str], sequences):
     """
     """
     idx = [i for i, fe in enumerate(all_features) if fe in selecteds]
+    print(f'最终选择后可用feature个数:{len(idx)}')
     sequences = [seq[:, idx] for seq in sequences] 
     return sequences
 
@@ -1190,36 +1191,16 @@ class NFLPredictor:
         train_input = pd.concat([pd.read_csv(f) for f in train_input_files if f.exists()])
         train_output = pd.concat([pd.read_csv(f) for f in train_output_files if f.exists()])
 
-        print(f"\n[2/4] [{timestamp()}] Preparing geometric sequences...")
-        result = prepare_sequences_geometric(
-            train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
-        )
-        save_pickle(result, './feature_167_reuslt.pkl')
+        # print(f"\n[2/4] [{timestamp()}] Preparing geometric sequences...")
+        # result = prepare_sequences_geometric(
+        #     train_input, train_output, is_training=True, window_size=config.WINDOW_SIZE
+        # )
+        # save_pickle(result, './feature_167_reuslt.pkl')
         result = read_pickle('./feature_167_reuslt.pkl')
 
         target_features = [
-            'x', 'y', 's', 'a', 'o', 'dir', 'frame_id', 'ball_land_x', 'ball_land_y',
-        'player_height_feet', 'player_weight', 'height_inches', 'bmi',
-        'velocity_x', 'velocity_y', 'acceleration_x', 'acceleration_y',
-        'momentum_x', 'momentum_y', 'kinetic_energy',
-        'speed_squared', 'accel_magnitude', 'orientation_diff',
-        'is_offense', 'is_defense', 'is_receiver', 'is_coverage', 'is_passer',
-        'role_targeted_receiver', 'role_defensive_coverage', 'role_passer', 'side_offense',
-        'distance_to_ball', 'dist_to_ball', 'dist_squared', 'angle_to_ball', 
-        'ball_direction_x', 'ball_direction_y', 'closing_speed_ball',
-        'velocity_toward_ball', 'velocity_alignment', 'angle_diff',
-        'nearest_opp_dist', 'closing_speed', 'num_nearby_opp_3', 'num_nearby_opp_5',
-        'mirror_wr_vx', 'mirror_wr_vy', 'mirror_offset_x', 'mirror_offset_y',
-        'pressure', 'under_pressure', 'pressure_x_speed', 
-        'mirror_similarity', 'mirror_offset_dist', 'mirror_alignment',
-        'route_pattern', 'traj_straightness', 'traj_max_turn', 'traj_mean_turn',
-        'traj_depth', 'traj_width', 'speed_mean', 'speed_change',
-        'gnn_ally_dx_mean', 'gnn_ally_dy_mean', 'gnn_ally_dvx_mean', 'gnn_ally_dvy_mean',
-        'gnn_opp_dx_mean', 'gnn_opp_dy_mean', 'gnn_opp_dvx_mean', 'gnn_opp_dvy_mean',
-        'gnn_ally_cnt', 'gnn_opp_cnt',
-        'gnn_ally_dmin', 'gnn_ally_dmean', 'gnn_opp_dmin', 'gnn_opp_dmean',
-        'gnn_d1', 'gnn_d2', 'gnn_d3',
-        # "x_lag1", "y_lag1", "velocity_x_lag1", "velocity_y_lag1", "s_lag1", "a_lag1", "x_lag2", "y_lag2", 
+            'velocity_y_delta', 'velocity_x_delta', 'ball_direction_y', 'error_from_ball_y', 'ball_land_y', 'ball_direction_x', 'velocity_y_lag5', 'dist_scaled_by_progress', 'speed_change', 'geo_vector_y', 'error_from_ball_x', 'geo_required_ay', 'geo_velocity_error_y', 'velocity_x_lag5', 'gnn_opp_dvy_mean', 'momentum_y', 'error_from_ball', 'expected_y_at_ball', 'velocity_x_progress', 'a_lag3', 'geo_velocity_error', 'velocity_y_rolling_std_3', 'velocity_toward_ball', 'mirror_offset_y', 'velocity_y_lag4', 'a_lag2', 'velocity_y_ema', 'dist_to_ball', 'velocity_x_lag4', 'velocity_y_progress', 'orientation_diff', 'speed_squared', 'velocity_y', 'momentum_x', 'kinetic_energy', 'distance_to_ball', 'ball_land_x', 'velocity_y_rolling_mean_3', 'y_rolling_mean_5', 'pressure', 'mirror_wr_vy', 'weighted_dist_by_time', 'closing_speed_ball', 'geo_required_ax', 'speed_scaled_by_time_left', 'accel_magnitude', 'velocity_x', 'velocity_x_rolling_std_3', 'gnn_ally_dy_mean', 'a_lag4', 'geo_vector_x', 'role_targeted_receiver', 'dist_squared', 'geo_required_vy', 'mirror_offset_x', 'traj_width', 'geo_velocity_error_x', 'mirror_wr_vx', 's_rolling_std_3', 'gnn_opp_dvx_mean', 's', 'gnn_ally_dvy_mean', 'velocity_y_lag1', 'velocity_y_lag3', 'geo_endpoint_y', 'gnn_opp_dmean', 'a_lag5', 'gnn_ally_dvx_mean', 's_rolling_mean_3', 'mirror_offset_dist', 'progress_ratio', 'acceleration_y', 's_rolling_std_5', 'gnn_ally_dx_mean', 'mirror_similarity', 'velocity_y_lag2', 'velocity_x_ema', 'closing_speed', 'num_nearby_opp_5', 'acceleration_x', 'geo_required_vx', 'velocity_x_lag1', 'velocity_y_rolling_std_5', 'y_lag4', 'gnn_opp_cnt', 'is_passer', 'time_squared', 'frame_time', 'velocity_y_rolling_mean_5', 'x_lag4', 'y_rolling_std_5', 'angle_diff', 'y_lag5', 'geo_alignment', 'frame_id', 'y_lag2', 'geo_distance', 'a', 'gnn_opp_dx_mean', 'y', 'velocity_x_rolling_std_5', 'angle_to_ball', 'num_nearby_opp_3', 'gnn_opp_dy_mean', 'velocity_x_lag2', 'gnn_opp_dmin', 'height_inches', 'gnn_d3', 'speed_mean', 'velocity_x_rolling_mean_5', 'traj_mean_turn', 'nearest_opp_dist', 'velocity_x_lag3', 'y_lag1', 'is_offense', 'length_ratio', 'geo_endpoint_x', 'gnn_ally_cnt', 'role_passer', 's_lag1', 'gnn_ally_dmean', 'speed_ema', 'velocity_alignment', 'expected_x_at_ball', 'gnn_d1', 'traj_straightness', 'pressure_x_speed', 'mirror_alignment', 'x_rolling_std_5', 'x_lag1', 'x_rolling_std_3', 'actual_play_length', 'x_lag5', 'y_lag3', 'a_lag1', 's_lag5', 'time_remaining', 's_lag3', 'o', 'traj_max_turn', 'x_lag2', 'x_lag3', 'is_defense', 'frames_remaining', 'gnn_d2', 'x', 's_lag4', 'is_coverage', 'dir', 'player_weight', 's_rolling_mean_5', 'max_play_duration', 'side_offense', 'y_rolling_std_3', 'x_rolling_mean_5', 'role_defensive_coverage', 'traj_depth', 'velocity_x_rolling_mean_3', 'under_pressure', 'bmi', 's_lag2', 'route_pattern', 'player_height_feet', 'y_rolling_mean_3', 'is_receiver', 'gnn_ally_dmin', 'x_rolling_mean_3'
+       # "x_lag1", "y_lag1", "velocity_x_lag1", "velocity_y_lag1", "s_lag1", "a_lag1", "x_lag2", "y_lag2", 
         # "velocity_x_lag2", "velocity_y_lag2", "s_lag2", "a_lag2", "x_lag3", "y_lag3", "velocity_x_lag3", "velocity_y_lag3",
         # "s_lag3", "a_lag3", "x_lag4", "y_lag4", "velocity_x_lag4", "velocity_y_lag4", "s_lag4", "a_lag4", "x_lag5", "y_lag5",
         # "velocity_x_lag5", "velocity_y_lag5", "s_lag5", "a_lag5", "x_rolling_mean_3", "x_rolling_std_3", "y_rolling_mean_3", 
@@ -1234,11 +1215,9 @@ class NFLPredictor:
         # "actual_play_length", "length_ratio", "geo_endpoint_x", "geo_endpoint_y", "geo_vector_x", "geo_vector_y", 
         # "geo_distance", "geo_required_vx", "geo_required_vy", "geo_velocity_error_x", "geo_velocity_error_y", 
         # "geo_velocity_error", "geo_required_ax", "geo_required_ay", "geo_alignment"
-        ]
+        ][:64]
 
         sequences, targets_dx, targets_dy, targets_frame_ids, sequence_ids, geo_x, geo_y, route_kmeans, route_scaler, all_features = result
-
-        target_features = all_features
 
         sequences = select_features(all_features, target_features, sequences)
 
