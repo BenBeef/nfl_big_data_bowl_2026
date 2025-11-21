@@ -1114,6 +1114,67 @@ def select_features(all_features:List[str], selecteds:List[str], sequences):
     sequences = [seq[:, idx] for seq in sequences] 
     return sequences
 
+def compute_fold_feature_importance(model, X_scaled, y_frame_ids, all_features, device, n_samples=50):
+    """
+    计算单个fold中的特征重要性（基于梯度，使用mask过滤无效值）
+    
+    Args:
+        model: 训练好的模型
+        X_scaled: 标准化的输入数据 list of arrays, shape: (n, 10, n_features)
+        y_frame_ids: frame_ids列表，用于确定每个序列的有效长度
+        all_features: 特征名称列表
+        device: torch device
+        n_samples: 用于计算梯度的样本数
+    
+    Returns:
+        feature_importance: numpy array, shape: (n_features,)
+    """
+    model.eval()
+    n_features = X_scaled[0].shape[-1]
+    feature_importance = np.zeros(n_features)
+    
+    # 随机采样
+    sample_size = min(n_samples, len(X_scaled))
+    sample_indices = np.random.choice(len(X_scaled), sample_size, replace=False)
+    
+    for idx in sample_indices:
+        x_single = np.expand_dims(X_scaled[idx], axis=0)  # ✓ 从列表中取单个元素并添加batch维度
+        x_tensor = torch.tensor(x_single.astype(np.float32)).to(device)
+        x_tensor.requires_grad_(True)
+        
+        try:
+            pred = model(x_tensor)  # Shape: (1, 94, 2)
+            
+            # 获取该样本的有效长度（从frame_ids推断）
+            valid_len = len(y_frame_ids[idx])
+            
+            # 创建mask应用在pred上（(1, 94, 2)）
+            mask_3d = torch.zeros_like(pred)
+            mask_3d[:, :valid_len, :] = 1.0  # 前valid_len个时间步有效
+            
+            # 直接在pred上应用mask
+            masked_pred = pred * mask_3d
+            
+            # 计算masked RMSE
+            valid_count = valid_len * 2  # 有效元素数（包括x和y）
+            if valid_count > 0:
+                loss = torch.sqrt(torch.sum(masked_pred ** 2) / valid_count)
+            else:
+                continue
+                
+            loss.backward()
+            
+            if x_tensor.grad is not None:
+                grad = np.abs(x_tensor.grad.cpu().detach().numpy()[0])
+                feature_importance += grad.sum(axis=0)  # Sum across time dimension
+        except:
+            continue
+    
+    # Normalize
+    feature_importance /= max(1, sample_size)
+    
+    return feature_importance
+
 class NFLPredictor:
     def __init__(self):
         warnings.filterwarnings('ignore')
@@ -1250,6 +1311,7 @@ class NFLPredictor:
         X_sample = np.array([sequences[i] for i in sample_indices])  # (sample_size, window_size, n_features)
         y_sample_dx = [targets_dx[i] for i in sample_indices]
         y_sample_dy = [targets_dy[i] for i in sample_indices]
+        y_sample_frame_ids = [targets_frame_ids[i] for i in sample_indices]  # ✓ 获取frame_ids
         
         # Split into train and validation sets (80/20 split)
         val_size = int(sample_size * 0.2)
@@ -1321,7 +1383,7 @@ class NFLPredictor:
         best_state = None
         patience_counter = 0
         
-        for epoch in range(100):
+        for epoch in range(200):
             # Training phase
             model_shap.train()
             train_losses = []
@@ -1385,18 +1447,34 @@ class NFLPredictor:
         X_all_scaled = np.vstack([X_train_scaled, X_val_scaled])
         
         # Sample for gradient computation
-        shap_sample_size = min(100, len(X_all_scaled))
+        shap_sample_size = min(5000, len(X_all_scaled))
         shap_indices = np.random.choice(len(X_all_scaled), shap_sample_size, replace=False)
         
         for idx in shap_indices:
-            x_single = X_all_scaled[idx:idx+1]
+            x_single = np.expand_dims(X_all_scaled[idx], axis=0)  # ✓ 从列表中取单个元素并添加batch维度
             x_tensor = torch.tensor(x_single.astype(np.float32)).to(device)
             x_tensor.requires_grad_(True)
             
             try:
-                pred = model_shap(x_tensor)
-                # Use final prediction as importance signal
-                loss = pred.sum()
+                pred = model_shap(x_tensor)  # Shape: (1, 94, 2)
+                
+                # 获取该样本的有效长度（从frame_ids推断）
+                valid_len = len(y_sample_frame_ids[idx])
+                
+                # 创建mask应用在pred上（(1, 94, 2)）
+                mask_3d = torch.zeros_like(pred)
+                mask_3d[:, :valid_len, :] = 1.0  # 前valid_len个时间步有效
+                
+                # 直接在pred上应用mask
+                masked_pred = pred * mask_3d
+                
+                # 计算masked RMSE
+                valid_count = valid_len * 2  # 有效元素数（包括x和y）
+                if valid_count > 0:
+                    loss = torch.sqrt(torch.sum(masked_pred ** 2) / valid_count)
+                else:
+                    continue
+                    
                 loss.backward()
                 
                 if x_tensor.grad is not None:
@@ -1420,122 +1498,8 @@ class NFLPredictor:
         
         print("\n  Top 64 most important features (SHAP-based):")
         print(feature_importance_df.head(64).to_string())
-        print(feature_importance_df['feature'].tolist()[:64])
+        print(feature_importance_df['feature'].tolist())
         
-        # Step 4: Select features based on importance
-        print("\n  Step 4: Selecting features...")
-        cumsum_importance = np.cumsum(feature_importance_df['importance'].values)
-        cumsum_importance_normalized = cumsum_importance / (cumsum_importance[-1] + 1e-8)
-        n_features_to_keep = np.argmax(cumsum_importance_normalized >= 0.85) + 1
-        
-        # Ensure reasonable bounds
-        n_features_to_keep = max(50, min(n_features_to_keep, 150))
-        
-        target_features = feature_importance_df.head(n_features_to_keep)['feature'].tolist()
-        
-        print(f"  ✓ Selected {len(target_features)} features (explaining ~85% importance)")
-        if n_features_to_keep > 0:
-            print(f"  Feature importance threshold: {feature_importance_df.iloc[n_features_to_keep-1]['importance']:.8f}")
-        
-        # Save SHAP importance results
-        try:
-            shap_result_path = config.MODEL_DIR / "feature_importance_shap.csv"
-            feature_importance_df.to_csv(shap_result_path, index=False)
-            print(f"  ✓ Saved feature importance to {shap_result_path}")
-        except Exception as e:
-            print(f"  Warning: Could not save feature importance: {e}")
-        
-        # Clean up auxiliary model
-        del model_shap
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        sequences = select_features(all_features, target_features, sequences)
-
-        sequences = list(sequences)
-        targets_dx = list(targets_dx)
-        targets_dy = list(targets_dy)
-        self.route_kmeans = route_kmeans
-        self.route_scaler = route_scaler
-        
-        # Train
-        print(f"\n[3/4] [{timestamp()}] Training geometric models...")
-        groups = np.array([d['game_id'] for d in sequence_ids])
-        gkf = GroupKFold(n_splits=config.N_FOLDS)
-        
-        self.models, self.scalers = [], []
-        scores = []
-        fold_losses = []
-        
-        for fold, (tr, va) in enumerate(gkf.split(sequences, groups=groups), 1):
-            print(f"\n{'='*60}")
-            print(f"Fold {fold}/{config.N_FOLDS}")
-            print(f"{'='*60}")
-            
-            X_tr = [sequences[i] for i in tr]
-            X_va = [sequences[i] for i in va]
-            y_tr_dx = [targets_dx[i] for i in tr]
-            y_va_dx = [targets_dx[i] for i in va]
-            y_tr_dy = [targets_dy[i] for i in tr]
-            y_va_dy = [targets_dy[i] for i in va]
-            
-            scaler = StandardScaler()
-            scaler.fit(np.vstack([s for s in X_tr]))
-            
-            X_tr_sc = [scaler.transform(s) for s in X_tr]
-            X_va_sc = [scaler.transform(s) for s in X_va]
-            
-            model, loss, score = train_model(
-                X_tr_sc, y_tr_dx, y_tr_dy,
-                X_va_sc, y_va_dx, y_va_dy,
-                X_tr[0].shape[-1], config.MAX_FUTURE_HORIZON, config
-            )
-
-            if config.SAVE_ARTIFACTS:
-                try:
-                    model_path = config.MODEL_DIR / f"model_fold{fold}.pt"
-                    scaler_path = config.MODEL_DIR / f"scaler_fold{fold}.pkl"
-                    # save model state dict on CPU to avoid device issues
-                    state = {k: v.cpu() for k, v in model.state_dict().items()}
-                    torch.save(state, str(model_path))
-                    with open(scaler_path, "wb") as f:
-                        pickle.dump(scaler, f)
-                    print(f"  Saved artifacts for fold {fold} -> {model_path.name}, {scaler_path.name}")
-                except Exception as e:
-                    print(f"  Warning: failed to save artifacts for fold {fold}:", e)
-            
-            self.models.append(model)
-            self.scalers.append(scaler)
-
-            scores.append(score)
-            fold_losses.append(loss)
-            
-            print(f"\n✓ Fold {fold} - Loss: {loss:.5f}, val_RMSE:{score:.5f}")
-        
-        avg_rmse = np.mean(scores)
-        avg_loss = np.mean(fold_losses)
-        print(f"AVG valid rmse:{avg_rmse}")
-        print(f"AVG avg_loss:{avg_loss}")
-
-        print(f"\n[4/4] [{timestamp()}] save models")
-        if config.SAVE_ARTIFACTS:
-            try:
-                text = {"avg_rmse":avg_rmse, "avg_loss":avg_loss}
-                with open(config.MODEL_DIR / "train_results.json", "w") as f:
-                    json.dump(text, f)
-                with open(config.MODEL_DIR / "route_kmeans.pkl", "wb") as f:
-                    pickle.dump(self.route_kmeans, f)
-                with open(config.MODEL_DIR / "route_scaler.pkl", "wb") as f:
-                    pickle.dump(self.route_scaler, f)
-                print(f"✓ Saved route artifacts -> route_kmeans.pkl, route_scaler.pkl")
-            except Exception as e:
-                print("Warning: failed to save scores:", e)
-
-        for model in self.models:
-            model.eval()
-        print("\n🏆 Geometric Neural Breakthrough Model is ready for inference! 🏆")
-
-
     def predict(self, test: pl.DataFrame, test_input: pl.DataFrame) -> pd.DataFrame:
         """Inference function called by the API for each time step."""
         
