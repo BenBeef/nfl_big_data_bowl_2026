@@ -104,11 +104,15 @@ def prepare_sequences_with_advanced_features(
     print(f"{'='*80}")
     print(f"Window size: {Config.WINDOW_SIZE}")
 
+    # game_id/play_id/nfl_id 字段类型强制转换
     input_df = _canonicalize_key_dtypes(input_df)
     output_df = _canonicalize_key_dtypes(output_df)
 
+    # 去重 game_id, play_id, play_direction
     dir_map = build_play_direction_map(input_df)
+    # 统一输入数据方向为向左
     input_df = unify_left_direction_ipt(input_df)
+    # 统一输出数据的方向为左
     output_df = unify_left_direction_opt(output_df, dir_map)
 
     target_rows = output_df

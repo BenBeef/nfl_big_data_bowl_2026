@@ -134,13 +134,13 @@ def save_fold_artifacts_stt(
     torch.save(model.state_dict(), sdir / f"model_fold{fold}.pt")
 
 
-def write_meta(feature_cols: list, base_dir: Path):
+def write_meta(feature_cols: list, base_dir: Path, feature_groups=None):
     meta = {
         "seeds": Config.SEEDS,
         "n_folds": Config.N_FOLDS,
         "feature_cols": feature_cols,
         "window_size": Config.WINDOW_SIZE,
-        "feature_groups": Config.FEATURE_GROUPS,
+        "feature_groups": feature_groups if feature_groups else Config.FEATURE_GROUPS,
         "version": 1,
     }
     with open(base_dir / "meta.json", "w") as f:

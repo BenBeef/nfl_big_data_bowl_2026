@@ -1,6 +1,7 @@
 import os
 import torch
 from pathlib import Path
+from datetime import datetime
 
 
 def is_kaggle():
@@ -11,7 +12,7 @@ class Config:
     ############################################################
     #               Configuration (Mode & Path)                #
     ############################################################
-    TIME_TAG = "default"
+    TIME_TAG = datetime.now().strftime('%Y-%m-%d_%H%M%S')
 
     # Status flag
     # Train in(==) local, submit in kaggle environment
@@ -81,7 +82,7 @@ class Config:
     N_RES_BLOCKS = 2
     N_QUERYS = 1
 
-    DEVICE = torch.device("cuda:1" if TRAIN else "cuda")
+    DEVICE = torch.device("cuda:0" if TRAIN else "cuda")
 
     # Field Setting
     YARDS_TO_METERS = 0.9144
