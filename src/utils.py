@@ -157,7 +157,7 @@ def write_meta(feature_cols: list, base_dir: Path, feature_groups=None, save_src
         dst_dir = base_dir / "src"
         if dst_dir.exists():
             shutil.rmtree(dst_dir)
-        shutil.copytree(src_dir, dst_dir)
+        shutil.copytree(src_dir, dst_dir, ignore=shutil.ignore_patterns("__pycache__"))
         print(f"[SRC] Copied src folder to {dst_dir}") 
 
 

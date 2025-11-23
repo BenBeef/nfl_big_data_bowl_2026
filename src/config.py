@@ -26,7 +26,7 @@ class Config:
     PREFIX = "/kaggle/input/" if not TRAIN else ""
     DATA_DIR = Path(f"{PREFIX}nfl-big-data-bowl-2026-prediction/")
     OUTPUT_DIR = Path("./output")
-    SAVE_DIR = Path(f"./output/{TIME_TAG}")
+    SAVE_DIR = Path(f"./output/{TIME_TAG}{'_debug' if DEBUG else ''}")
 
     # fallback to a single process in submit mode
     MAX_WORKER = min(8, os.cpu_count() or 1) if TRAIN else 1
