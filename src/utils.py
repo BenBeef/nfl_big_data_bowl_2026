@@ -134,7 +134,7 @@ def save_fold_artifacts_stt(
     torch.save(model.state_dict(), sdir / f"model_fold{fold}.pt")
 
 
-def write_meta(feature_cols: list, base_dir: Path, feature_groups=None):
+def write_meta(feature_cols: list, base_dir: Path, feature_groups=None, save_src=False):
     meta = {
         "seeds": Config.SEEDS,
         "n_folds": Config.N_FOLDS,
@@ -150,6 +150,15 @@ def write_meta(feature_cols: list, base_dir: Path, feature_groups=None):
     with open(base_dir / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     print(f"[META] wrote meta.json to {base_dir}")
+    
+    if save_src:
+        import shutil
+        src_dir = Path(__file__).parent
+        dst_dir = base_dir / "src"
+        if dst_dir.exists():
+            shutil.rmtree(dst_dir)
+        shutil.copytree(src_dir, dst_dir)
+        print(f"[SRC] Copied src folder to {dst_dir}") 
 
 
 def write_cv_log(cv_log: list, all_rmse: list):

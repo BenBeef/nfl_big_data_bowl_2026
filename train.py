@@ -52,7 +52,8 @@ if __name__ == '__main__':
     write_meta(
         feature_cols = feature_cols, 
         base_dir=Config.SAVE_DIR,
-        feature_groups = feature_groups
+        feature_groups = feature_groups,
+        save_src=True
     )
 
     print(f"\n[{timestamp()}] finished..")
