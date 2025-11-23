@@ -150,6 +150,50 @@ class FeatureEngineer:
         self.created_feature_cols.extend([c for c in base if c in df.columns])
         return df
 
+
+    def _add_feature(self, input_df: pd.DataFrame):
+        if not 'num_frames_output' in input_df.columns:
+            return input_df
+
+        max_frames = input_df['num_frames_output']
+        
+        # 每个frame_id上的时间
+        input_df['frame_time'] = input_df['frame_id'] / 10.0
+        # 每个frame_id/预测frame数
+        input_df['progress_ratio'] = input_df['frame_id'] / np.maximum(max_frames, 1)
+        
+        # 预期落地点
+        input_df['expected_x_at_ball'] = input_df['x'] + input_df['velocity_x'] * input_df['frame_time']
+        input_df['expected_y_at_ball'] = input_df['y'] + input_df['velocity_y'] * input_df['frame_time']
+        
+        # 落地点  TODO 分析其余特征
+        if 'ball_land_x' in input_df.columns:
+            input_df['error_from_ball_x'] = input_df['expected_x_at_ball'] - input_df['ball_land_x']
+            input_df['error_from_ball_y'] = input_df['expected_y_at_ball'] - input_df['ball_land_y']
+            input_df['error_from_ball'] = np.sqrt(
+                input_df['error_from_ball_x']**2 + input_df['error_from_ball_y']**2
+            )
+
+            ball_dx = input_df['ball_land_x'] - input_df['x']
+            ball_dy = input_df['ball_land_y'] - input_df['y']
+            input_df['dist_to_ball'] = np.sqrt(ball_dx**2 + ball_dy**2)
+            
+            input_df['weighted_dist_by_time'] = input_df['dist_to_ball'] / (input_df['frame_time'] + 0.1)
+            input_df['dist_scaled_by_progress'] = input_df['dist_to_ball'] * (1 - input_df['progress_ratio'])
+        
+        cols = [
+            'error_from_ball_x',
+            'error_from_ball_y',
+            'error_from_ball',
+            'dist_scaled_by_progress',
+            'expected_y_at_ball'
+        ]
+        cols = [c for c in cols if c not in self.created_feature_cols]
+
+        self.created_feature_cols.extend([c for c in cols if c in input_df.columns])
+        return input_df
+
+
     def _create_target_alignment_features(self, df: pd.DataFrame):
         """
         Compute alignment features between a player's movement vector and the ball's direction.
@@ -1004,6 +1048,9 @@ class FeatureEngineer:
         # # Use index to accelerate groupby and merge operations
         # df.set_index(self.gcols, inplace=True, drop=False)
         df = self._create_basic_features(df)
+
+        # 增加特征
+        df = self._add_feature(df)
 
         # TODO: Optimize for interactive=False
         for group_name in self.active_groups:

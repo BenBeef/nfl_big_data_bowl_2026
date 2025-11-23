@@ -15,13 +15,22 @@ if __name__ == '__main__':
     train_input, train_output = load_input_output()
 
     feature_groups = [
-        "target_alignment",
+         "target_alignment",
+        # "multi_window",
+         "multi_window",
+        "lag",
         "motion_change",
         "field_position",
         "distance_rate",
         "geometric",
         "neighbor_gnn",
-        "time"
+        "time",
+        # "role",
+        "role",
+        "passer",
+        "curvature",
+        "route",
+        "receiver",
     ]
 
     print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")

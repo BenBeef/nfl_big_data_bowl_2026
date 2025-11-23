@@ -12,7 +12,7 @@ class Config:
     ############################################################
     #               Configuration (Mode & Path)                #
     ############################################################
-    TIME_TAG = datetime.now().strftime('%Y%m%d_%H%M%S')
+    TIME_TAG = datetime.now().strftime('%Y_%m_%d_%H%M%S')
 
     # Status flag
     # Train in(==) local, submit in kaggle environment
@@ -63,7 +63,7 @@ class Config:
     ############################################################
 
     # Training Setting
-    SEEDS = [42]
+    SEEDS = [0]
     # SEEDS = [42, 19, 89, 64]
     N_FOLDS = 5
     BATCH_SIZE = 256
