@@ -12,7 +12,7 @@ class Config:
     ############################################################
     #               Configuration (Mode & Path)                #
     ############################################################
-    TIME_TAG = datetime.now().strftime('%Y-%m-%d_%H%M%S')
+    TIME_TAG = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # Status flag
     # Train in(==) local, submit in kaggle environment

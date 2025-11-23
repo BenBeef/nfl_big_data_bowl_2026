@@ -142,6 +142,10 @@ def write_meta(feature_cols: list, base_dir: Path, feature_groups=None):
         "window_size": Config.WINDOW_SIZE,
         "feature_groups": feature_groups if feature_groups else Config.FEATURE_GROUPS,
         "version": 1,
+        "config":  {
+            k: v for k, v in Config.__dict__.items()
+            if isinstance(v, (str, int, float, bool, list)) and not k.startswith('_')
+        }
     }
     with open(base_dir / "meta.json", "w") as f:
         json.dump(meta, f, indent=2)
