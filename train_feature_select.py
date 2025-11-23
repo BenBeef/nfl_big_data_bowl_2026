@@ -1,6 +1,6 @@
 import numpy as np 
 from sklearn.model_selection import GroupKFold
-from src.model import train_all_folds_stt
+from src.model import train_all_folds_stt_feature_select
 from src.config import Config
 from src.utils import set_seed, load_input_output, write_meta
 from src.preprocess import prepare_sequences_with_advanced_features
@@ -45,15 +45,15 @@ if __name__ == '__main__':
     gkf = GroupKFold(n_splits=Config.N_FOLDS)
     groups = np.array([d['game_id'] for d in seq_meta])
 
-    train_all_folds_stt(gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim)
+    train_all_folds_stt_feature_select(gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim, feature_cols)
 
 
-    print(f"\n[4/4] [{timestamp()}] Save Meta data...")
-    write_meta(
-        feature_cols = feature_cols, 
-        base_dir=Config.SAVE_DIR,
-        feature_groups = feature_groups,
-        save_src=True
-    )
+    # print(f"\n[4/4] [{timestamp()}] Save Meta data...")
+    # write_meta(
+    #     feature_cols = feature_cols, 
+    #     base_dir=Config.SAVE_DIR,
+    #     feature_groups = feature_groups,
+    #     save_src=True
+    # )
 
     print(f"\n[{timestamp()}] finished..")

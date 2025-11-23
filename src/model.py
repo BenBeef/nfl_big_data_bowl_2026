@@ -375,3 +375,124 @@ def train_all_folds_stt(
     )
 
     return all_rmse, cv_log
+
+
+def train_all_folds_stt_feature_select(
+    gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim, all_features
+):
+    fold_rmses = []
+    all_rmse = []
+    cv_log = []
+
+    
+    # 模型训练 - 使用 GroupKFold 进行切分，保持 groups 一致性
+    fold_generator = gkf.split(sequences, y=None, groups=groups)
+    train_indices, val_indices = next(fold_generator)
+    
+    train_indices = list(train_indices)
+    val_indices = list(val_indices)
+    
+    # 按索引提取训练和验证数据
+    X_tr = [sequences[i] for i in train_indices]
+    y_tr_dx = [targets_dx[i] for i in train_indices]
+    y_tr_dy = [targets_dy[i] for i in train_indices]
+    
+    X_va = [sequences[i] for i in val_indices]
+    y_va_dx = [targets_dx[i] for i in val_indices]
+    y_va_dy = [targets_dy[i] for i in val_indices]
+
+
+    scaler = StandardScaler()
+    scaler.fit(np.vstack([s for s in X_tr]))
+
+    X_tr_sc = [scaler.transform(s) for s in X_tr]
+    X_va_sc = [scaler.transform(s) for s in X_va]
+
+    model, loss = train_model_stt(
+        X_tr_sc,
+        y_tr_dx,
+        y_tr_dy,
+        X_va_sc,
+        y_va_dx,
+        y_va_dy,
+        input_dim,
+    )
+
+    rmse = compute_val_rmse_stt(
+        model,
+        X_va_sc,
+        [targets_dx[i] for i in val_indices],
+        [targets_dy[i] for i in val_indices],
+        Config.MAX_FUTURE_HORIZON,
+        Config.DEVICE,
+    )
+
+    print(
+        f"[VAL] seed {seed} → "
+        f"Huber loss={loss:.5f} | "
+        f"RMSE={rmse:.4f}"
+    )
+
+    # 特征选择
+    feature_importance = np.zeros(len(all_features))
+    
+    # Combine train and val scaled data for gradient computation
+    X_all_scaled = np.vstack([X_tr_sc, X_va_sc])
+    
+    # Sample for gradient computation
+    shap_sample_size = min(5000, len(X_all_scaled))
+    shap_indices = np.random.choice(len(X_all_scaled), shap_sample_size, replace=False)
+    
+    for idx in shap_indices:
+        x_single = np.expand_dims(X_all_scaled[idx], axis=0)  # ✓ 从列表中取单个元素并添加batch维度
+        x_tensor = torch.tensor(x_single.astype(np.float32)).to(Config.DEVICE)
+        x_tensor.requires_grad_(True)
+        
+        try:
+            pred = model(x_tensor)  # Shape: (1, 94, 2)
+            
+            # 获取该样本的有效长度（从frame_ids推断）
+            valid_len = len(targets_dy[idx])
+            
+            # 创建mask应用在pred上（(1, 94, 2)）
+            mask_3d = torch.zeros_like(pred)
+            mask_3d[:, :valid_len, :] = 1.0  # 前valid_len个时间步有效
+            
+            # 直接在pred上应用mask
+            masked_pred = pred * mask_3d
+            
+            # 计算masked RMSE
+            valid_count = valid_len * 2  # 有效元素数（包括x和y）
+            if valid_count > 0:
+                loss = torch.sqrt(torch.sum(masked_pred ** 2) / valid_count)
+            else:
+                continue
+                
+            loss.backward()
+            
+            if x_tensor.grad is not None:
+                grad = np.abs(x_tensor.grad.cpu().detach().numpy()[0])
+                feature_importance += grad.sum(axis=0)  # Sum across time dimension
+        except:
+            continue
+    
+    # Normalize
+    feature_importance /= max(1, shap_sample_size)
+    
+    # Reshape to per-feature importance (average across time steps if needed)
+    if len(feature_importance.shape) > 1:
+        feature_importance = feature_importance.mean(axis=0)
+    
+    
+    import pandas as pd
+    # Create feature importance dataframe
+    feature_importance_df = pd.DataFrame({
+        'feature': all_features,
+        'importance': feature_importance
+    }).sort_values('importance', ascending=False)
+    
+    print("\n  Top 64 most important features (SHAP-based):")
+    print(feature_importance_df.head(64).to_string())
+    print(feature_importance_df['feature'].tolist())
+
+    return all_rmse, cv_log
