@@ -97,6 +97,7 @@ def prepare_sequences_with_advanced_features(
     input_df: pd.DataFrame,
     output_df: pd.DataFrame,
     feature_groups: list = None,
+    all_features = None
 ):
 
     print(f"\n{'='*80}")
@@ -121,6 +122,13 @@ def prepare_sequences_with_advanced_features(
     # Feature Engineering
     fe = FeatureEngineer(feature_groups)
     processed_df, feature_cols = fe.transform(input_df)
+
+    # 添加特征
+    if all_features:
+        feature_cols = all_features
+        for feat in feature_cols:
+            if feat not in processed_df:
+                processed_df[feat] = 0.0
 
     # Build sequences
     start_time = time.time()

@@ -63,7 +63,7 @@ class Config:
     ############################################################
 
     # Training Setting
-    SEEDS = [0]
+    SEEDS = [42]
     # SEEDS = [42, 19, 89, 64]
     N_FOLDS = 5
     BATCH_SIZE = 256

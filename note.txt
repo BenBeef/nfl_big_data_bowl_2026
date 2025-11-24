@@ -338,3 +338,25 @@ https://www.kaggle.com/code/mango789/nfl2026-submission/comments
 提交13:
 [VAL] seed 0 fold 5 → Huber loss=0.07577 | RMSE=0.5709
 [SEED SUMMARY] seed 0 RMSEs: ['0.5801', '0.5846', '0.6236', '0.5770', '0.5709'] | mean=0.5872 yards
+
+
+提交14：
+修改：提交9  + seed = 0  + gnn特征
+文件夹：2025_11_24_004627
+[VAL] seed 0 fold 5 → Huber loss=0.07507 | RMSE=0.5709
+[SEED SUMMARY] seed 0 RMSEs: ['0.5807', '0.5797', '0.6248', '0.5850', '0.5709'] | mean=0.5882 yards
+
+
+
+提交14：
+修改：提交9  + 充值seed
+文件夹：2025_11_24_194639
+[VAL] seed 42 fold 5 → Huber loss=0.07443 | RMSE=0.5601
+[SEED SUMMARY] seed 42 RMSEs: ['0.5779', '0.5745', '0.6436', '0.5701', '0.5601'] | mean=0.5852 yards
+提交后得分: 0.561
+
+提交15：
+修改：提交9  + 充值seed + 新的特征
+文件夹：2025_11_25_000625_copy
+[VAL] seed 42 fold 5 → Huber loss=0.07514 | RMSE=0.5606
+[SEED SUMMARY] seed 42 RMSEs: ['0.5872', '0.5756', '0.6290', '0.5657', '0.5606'] | mean=0.5836 yards

@@ -5,13 +5,20 @@ from src.config import Config
 from src.utils import set_seed, load_input_output, write_meta
 from src.preprocess import prepare_sequences_with_advanced_features
 from datetime import datetime
+import time 
 
 timestamp = lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
+start = time.time()
 
 if __name__ == '__main__':
 
-    print(f"[1/4] [{timestamp()}] Load Training data...")
+    def spend():
+        global start
+        start, diff = time.time(), time.time() - start
+        return f'spend {diff}'
+
+    print(f"[1/4] [{timestamp()}] Load Training data...", spend())
     train_input, train_output = load_input_output()
 
     feature_groups = [
@@ -31,24 +38,29 @@ if __name__ == '__main__':
         "curvature",
         "route",
         "receiver",
+
+
+        "other_predicted_lag", 
     ]
 
-    print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")
+    print(f"\n[2/4] [{timestamp()}] Prepare sequences data...", spend())
     result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
     sequences, targets_dx, targets_dy, targets_fids, seq_meta, feature_cols = result
 
     
-    print(f"\n[3/4] [{timestamp()}] Training all folds...")
+    print(f"\n[3/4] [{timestamp()}] Training all folds...", spend())
     
     input_dim = len(feature_cols)
-    seed = Config.SEEDS[0]
-    gkf = GroupKFold(n_splits=Config.N_FOLDS)
-    groups = np.array([d['game_id'] for d in seq_meta])
+    for seed in Config.SEEDS:
+        set_seed(seed)
 
-    train_all_folds_stt(gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim)
+        gkf = GroupKFold(n_splits=Config.N_FOLDS)
+        groups = np.array([d['game_id'] for d in seq_meta])
+
+        train_all_folds_stt(gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim)
 
 
-    print(f"\n[4/4] [{timestamp()}] Save Meta data...")
+    print(f"\n[4/4] [{timestamp()}] Save Meta data...", spend())
     write_meta(
         feature_cols = feature_cols, 
         base_dir=Config.SAVE_DIR,

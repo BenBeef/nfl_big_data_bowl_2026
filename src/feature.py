@@ -36,6 +36,7 @@ class FeatureEngineer:
             "curvature": (self._create_curvature_features, False),
             "route": (self._create_route_features, False),
             "receiver": (self._create_receiver_features, True),
+            "other_predicted_lag": (self._create_extended_lag_other_features, True)
         }
         self.created_feature_cols = []
 
@@ -193,6 +194,124 @@ class FeatureEngineer:
         self.created_feature_cols.extend([c for c in cols if c in input_df.columns])
         return input_df
 
+    def _compute_neighbor_embeddings(self, input_df, k_neigh=Config.K_NEIGH, 
+                                radius=Config.RADIUS, tau=Config.TAU):
+        """GNN-lite embeddings"""
+        print("🕸️  GNN embeddings...")
+        
+        cols_needed = ["game_id", "play_id", "nfl_id", "frame_id", "x", "y", 
+                    "velocity_x", "velocity_y", "player_side"]
+        src = input_df[cols_needed].copy()
+        
+        last = (src.sort_values(["game_id", "play_id", "nfl_id", "frame_id"])
+                .groupby(["game_id", "play_id", "nfl_id"], as_index=False)
+                .tail(1)
+                .rename(columns={"frame_id": "last_frame_id"})
+                .reset_index(drop=True))
+        
+        tmp = last.merge(
+            src.rename(columns={
+                "frame_id": "nb_frame_id", "nfl_id": "nfl_id_nb",
+                "x": "x_nb", "y": "y_nb", 
+                "velocity_x": "vx_nb", "velocity_y": "vy_nb", 
+                "player_side": "player_side_nb"
+            }),
+            left_on=["game_id", "play_id", "last_frame_id"],
+            right_on=["game_id", "play_id", "nb_frame_id"],
+            how="left"
+        )
+        
+        tmp = tmp[tmp["nfl_id_nb"] != tmp["nfl_id"]]
+        tmp["dx"] = tmp["x_nb"] - tmp["x"]
+        tmp["dy"] = tmp["y_nb"] - tmp["y"]
+        tmp["dvx"] = tmp["vx_nb"] - tmp["velocity_x"]
+        tmp["dvy"] = tmp["vy_nb"] - tmp["velocity_y"]
+        tmp["dist"] = np.sqrt(tmp["dx"]**2 + tmp["dy"]**2)
+        
+        tmp = tmp[np.isfinite(tmp["dist"]) & (tmp["dist"] > 1e-6)]
+        if radius is not None:
+            tmp = tmp[tmp["dist"] <= radius]
+        
+        tmp["is_ally"] = (tmp["player_side_nb"] == tmp["player_side"]).astype(np.float32)
+        
+        keys = ["game_id", "play_id", "nfl_id"]
+        tmp["rnk"] = tmp.groupby(keys)["dist"].rank(method="first")
+        if k_neigh is not None:
+            tmp = tmp[tmp["rnk"] <= float(k_neigh)]
+        
+        tmp["w"] = np.exp(-tmp["dist"] / float(tau))
+        sum_w = tmp.groupby(keys)["w"].transform("sum")
+        tmp["wn"] = np.where(sum_w > 0, tmp["w"] / sum_w, 0.0)
+        
+        tmp["wn_ally"] = tmp["wn"] * tmp["is_ally"]
+        tmp["wn_opp"] = tmp["wn"] * (1.0 - tmp["is_ally"])
+        
+        for col in ["dx", "dy", "dvx", "dvy"]:
+            tmp[f"{col}_ally_w"] = tmp[col] * tmp["wn_ally"]
+            tmp[f"{col}_opp_w"] = tmp[col] * tmp["wn_opp"]
+        
+        tmp["dist_ally"] = np.where(tmp["is_ally"] > 0.5, tmp["dist"], np.nan)
+        tmp["dist_opp"] = np.where(tmp["is_ally"] < 0.5, tmp["dist"], np.nan)
+        
+        ag = tmp.groupby(keys).agg(
+            gnn_ally_dx_mean=("dx_ally_w", "sum"),
+            gnn_ally_dy_mean=("dy_ally_w", "sum"),
+            gnn_ally_dvx_mean=("dvx_ally_w", "sum"),
+            gnn_ally_dvy_mean=("dvy_ally_w", "sum"),
+            gnn_opp_dx_mean=("dx_opp_w", "sum"),
+            gnn_opp_dy_mean=("dy_opp_w", "sum"),
+            gnn_opp_dvx_mean=("dvx_opp_w", "sum"),
+            gnn_opp_dvy_mean=("dvy_opp_w", "sum"),
+            gnn_ally_cnt=("is_ally", "sum"),
+            gnn_opp_cnt=("is_ally", lambda s: float(len(s) - s.sum())),
+            gnn_ally_dmin=("dist_ally", "min"),
+            gnn_ally_dmean=("dist_ally", "mean"),
+            gnn_opp_dmin=("dist_opp", "min"),
+            gnn_opp_dmean=("dist_opp", "mean"),
+        ).reset_index()
+        
+        near = tmp.loc[tmp["rnk"] <= 3, keys + ["rnk", "dist"]].copy()
+        if len(near) > 0:
+            near["rnk"] = near["rnk"].astype(int)
+            dwide = near.pivot_table(index=keys, columns="rnk", values="dist", aggfunc="first")
+            dwide = dwide.rename(columns={1: "gnn_d1", 2: "gnn_d2", 3: "gnn_d3"}).reset_index()
+            ag = ag.merge(dwide, on=keys, how="left")
+        
+        for c in ["gnn_ally_dx_mean", "gnn_ally_dy_mean", "gnn_ally_dvx_mean", "gnn_ally_dvy_mean",
+                "gnn_opp_dx_mean", "gnn_opp_dy_mean", "gnn_opp_dvx_mean", "gnn_opp_dvy_mean"]:
+            ag[c] = ag[c].fillna(0.0)
+        for c in ["gnn_ally_cnt", "gnn_opp_cnt"]:
+            ag[c] = ag[c].fillna(0.0)
+        for c in ["gnn_ally_dmin", "gnn_opp_dmin", "gnn_ally_dmean", "gnn_opp_dmean", 
+                "gnn_d1", "gnn_d2", "gnn_d3"]:
+            ag[c] = ag[c].fillna(radius if radius is not None else 30.0)
+        
+
+        cols = [
+            "gnn_ally_cnt", 
+            "gnn_ally_dmean", 
+            "gnn_ally_dmin", 
+            "gnn_ally_dvx_mean", 
+            "gnn_ally_dvy_mean", 
+            "gnn_ally_dx_mean", 
+            "gnn_ally_dy_mean", 
+            "gnn_d1", 
+            "gnn_d2", 
+            "gnn_d3", 
+            "gnn_opp_cnt", 
+            "gnn_opp_dmean", 
+            "gnn_opp_dmin", 
+            "gnn_opp_dvx_mean", 
+            "gnn_opp_dvy_mean", 
+            "gnn_opp_dx_mean", 
+            "gnn_opp_dy_mean", 
+        ]
+        cols = [c for c in cols if c not in self.created_feature_cols]
+        
+        # 合并特征到 input_df
+        input_df = input_df.merge(ag, on=['game_id', 'play_id', 'nfl_id'], how='left')
+        self.created_feature_cols.extend([c for c in cols if c in input_df.columns])
+        return input_df
 
     def _create_target_alignment_features(self, df: pd.DataFrame):
         """
@@ -298,6 +417,55 @@ class FeatureEngineer:
                         new_cols.append(f"{col}_diff_lag{lag}")
 
         return df, new_cols
+    
+    def _create_extended_lag_other_features(self, df: pd.DataFrame):
+        """
+        For each predicted player, reuse lag features from up to 2 ally and 2 opponent tracked players.
+        """
+        new_cols = set()
+        mask = df["player_to_predict"]
+        lag_features = [col for col in df.columns if "_lag" in col]
+
+        if not lag_features:
+            return df, []
+        
+
+        MAX_CNT = 2
+        # Sort and index for fast lookup
+        df_tracked = df.loc[mask].copy().sort_values("distance_to_ball")
+        neighbor_idx = df_tracked.set_index(["game_id", "play_id"]).sort_index()
+
+        # Group by nfl_id per play, find allies/opponents with top 2 closest to ball
+        for (game_id, play_id, nfl_id), group in df_tracked.groupby(["game_id", "play_id", 'nfl_id']):
+            curr_side = group.iloc[0]['player_side']
+            curr_idx = group.index[0]
+            
+            # Get other players in same (game, play, frame)
+            other_groups = neighbor_idx.loc[(game_id, play_id)]
+            other_groups = other_groups[other_groups["nfl_id"] != nfl_id]
+            
+            if other_groups.empty:
+                continue
+            
+            # Sample top 2 allies and opponents closest to ball
+            allies = other_groups[other_groups["player_side"] == curr_side].head(MAX_CNT)
+            opponents = other_groups[other_groups["player_side"] != curr_side].head(MAX_CNT)
+            
+            # Assign features for allies
+            for cnt, (ally_idx, ally_row) in enumerate(allies.iterrows(), 1):
+                for feat in lag_features:
+                    new_feat = f"{feat}_ally_{cnt}"
+                    df.loc[curr_idx, new_feat] = ally_row[feat]
+                    new_cols.add(new_feat)
+            
+            # Assign features for opponents
+            for cnt, (opp_idx, opp_row) in enumerate(opponents.iterrows(), 1):
+                for feat in lag_features:
+                    new_feat = f"{feat}_opp_{cnt}"
+                    df.loc[curr_idx, new_feat] = opp_row[feat]
+                    new_cols.add(new_feat)
+
+        return df, list(new_cols)
 
     def _create_motion_change_features(self, df: pd.DataFrame):
         """
@@ -1051,6 +1219,8 @@ class FeatureEngineer:
 
         # 增加特征
         df = self._add_feature(df)
+        # 添加gnn特征
+        # df = self._compute_neighbor_embeddings(df)
 
         # TODO: Optimize for interactive=False
         for group_name in self.active_groups:
