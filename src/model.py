@@ -198,6 +198,48 @@ class STTransformer(nn.Module):
         return out
 
 
+def _build_train_batches(X_train, y_train_dx, y_train_dy, shuffle=True):
+    """构建训练批次（支持 shuffle）"""
+    indices = np.arange(len(X_train))
+    if shuffle:
+        np.random.shuffle(indices)
+    
+    train_batches = []
+    for i in range(0, len(X_train), Config.BATCH_SIZE):
+        end = min(i + Config.BATCH_SIZE, len(X_train))
+        batch_indices = indices[i:end]
+        
+        X_batch = [X_train[j] for j in batch_indices]
+        y_dx_batch = [y_train_dx[j] for j in batch_indices]
+        y_dy_batch = [y_train_dy[j] for j in batch_indices]
+        
+        bx = torch.tensor(np.stack(X_batch).astype(np.float32))
+        by, bm = prepare_targets_stt(
+            y_dx_batch,
+            y_dy_batch,
+            Config.MAX_FUTURE_HORIZON,
+        )
+        train_batches.append((bx, by, bm))
+    
+    return train_batches
+
+
+def _build_val_batches(X_val, y_val_dx, y_val_dy):
+    """构建验证批次（不需要 shuffle）"""
+    val_batches = []
+    for i in range(0, len(X_val), Config.BATCH_SIZE):
+        end = min(i + Config.BATCH_SIZE, len(X_val))
+        bx = torch.tensor(np.stack(X_val[i:end]).astype(np.float32))
+        by, bm = prepare_targets_stt(
+            [y_val_dx[j] for j in range(i, end)],
+            [y_val_dy[j] for j in range(i, end)],
+            Config.MAX_FUTURE_HORIZON,
+        )
+        val_batches.append((bx, by, bm))
+    
+    return val_batches
+
+
 def train_model_stt(
     X_train,
     y_train_dx,
@@ -209,28 +251,8 @@ def train_model_stt(
 ):
     device = Config.DEVICE
 
-    # Construct train/val dataset
-    train_batches = []
-    for i in range(0, len(X_train), Config.BATCH_SIZE):
-        end = min(i + Config.BATCH_SIZE, len(X_train))
-        bx = torch.tensor(np.stack(X_train[i:end]).astype(np.float32))
-        by, bm = prepare_targets_stt(
-            [y_train_dx[j] for j in range(i, end)],
-            [y_train_dy[j] for j in range(i, end)],
-            Config.MAX_FUTURE_HORIZON,
-        )
-        train_batches.append((bx, by, bm))
-
-    val_batches = []
-    for i in range(0, len(X_val), Config.BATCH_SIZE):
-        end = min(i + Config.BATCH_SIZE, len(X_val))
-        bx = torch.tensor(np.stack(X_val[i:end]).astype(np.float32))
-        by, bm = prepare_targets_stt(
-            [y_val_dx[j] for j in range(i, end)],
-            [y_val_dy[j] for j in range(i, end)],
-            Config.MAX_FUTURE_HORIZON,
-        )
-        val_batches.append((bx, by, bm))
+    # Construct val_batches（只构建一次，不需要 shuffle）
+    val_batches = _build_val_batches(X_val, y_val_dx, y_val_dy)
 
     # Define model, criterion, optimizer, scheduler
     model = STTransformer(
@@ -250,6 +272,9 @@ def train_model_stt(
     start_time = time.time()
 
     for epoch in range(1, Config.EPOCHS + 1):
+        # 每个 epoch 都重新 shuffle 并构建训练批次
+        train_batches = _build_train_batches(X_train, y_train_dx, y_train_dy, shuffle=True)
+        
         model.train()
         train_losses = []
         for bx, by, bm in train_batches:
