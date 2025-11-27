@@ -44,14 +44,15 @@ from src.config import Config
 # =============================================================================
 # New imports for evaluation API
 import polars as pl
-from src.utils import load_saved_ensemble_stt, invert_to_original_direction
+from src.utils import load_saved_ensemble_separate_models_stt, invert_to_original_direction
 from src.preprocess import prepare_sequences_with_advanced_features
-from src.model import STTransformer
-from src.predict import predict_sst
+from src.model import STTransformer1D
+from src.predict import predict_sst_separate_models
 
 # Global variables to store models (loaded once on first predict call)
 _models_loaded = False
-_models = None
+_models_x = None
+_models_y = None
 _scalers = None
 _meta = None
 _feature_cols = None
@@ -59,7 +60,7 @@ _feature_cols = None
 
 def load_models_once():
     """Load models on first predict call (no 5-minute time limit)"""
-    global _models_loaded, _models, _scalers, _meta, _feature_cols
+    global _models_loaded, _models_x, _models_y, _scalers, _meta, _feature_cols
 
     if _models_loaded:
         return
@@ -68,11 +69,13 @@ def load_models_once():
     cfg = Config()
     cfg.MODELS_DIR = Path(f"/kaggle/input/nfl2026/{TIMETAG}")
 
-    _models, _scalers, _meta = load_saved_ensemble_stt(cfg.MODELS_DIR, STTransformer)
+    _models_x, _models_y, _scalers, _meta = load_saved_ensemble_separate_models_stt(
+        cfg.MODELS_DIR, STTransformer1D
+    )
     _feature_cols = _meta["feature_cols"]
 
     _models_loaded = True
-    print(f"[SERVER] Loaded {len(_models)} models successfully")
+    print(f"[SERVER] Loaded {len(_models_x)} X models and {len(_models_y)} Y models successfully")
 
 
 def predict(
@@ -88,7 +91,7 @@ def predict(
     Returns:
         DataFrame with x, y coordinates
     """
-    global _models, _scalers, _meta, _feature_cols
+    global _models_x, _models_y, _scalers, _meta, _feature_cols
 
     # First call: load models (no time limit)
     if not _models_loaded:
@@ -116,15 +119,16 @@ def predict(
     y_last_uni = np.array([s[-1, idx_y] for s in X_test_raw], dtype=np.float32)
 
     all_preds_dx, all_preds_dy = [], []
-    for m, sc in zip(_models, _scalers):
-        dx_tta, dy_tta = predict_sst(
-            m,
+    for mx, my, sc in zip(_models_x, _models_y, _scalers):
+        dx, dy = predict_sst_separate_models(
+            mx,
+            my,
             sc,
             X_test_raw,
             cfg.DEVICE,
         )
-        all_preds_dx.append(dx_tta)
-        all_preds_dy.append(dy_tta)
+        all_preds_dx.append(dx)
+        all_preds_dy.append(dy)
 
     ens_dx = np.mean(all_preds_dx, axis=0)
     ens_dy = np.mean(all_preds_dy, axis=0)

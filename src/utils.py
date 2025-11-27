@@ -134,6 +134,16 @@ def save_fold_artifacts_stt(
     torch.save(model.state_dict(), sdir / f"model_fold{fold}.pt")
 
 
+def save_fold_artifacts_separate_models_stt(
+    seed: int, fold: int, scaler, model_x: nn.Module, model_y: nn.Module, base_dir: Path
+):
+    """保存分离的 X 和 Y 模型"""
+    sdir = _seed_dir(base_dir, seed)
+    joblib.dump(scaler, sdir / f"scaler_fold{fold}.pkl")
+    torch.save(model_x.state_dict(), sdir / f"model_x_fold{fold}.pt")
+    torch.save(model_y.state_dict(), sdir / f"model_y_fold{fold}.pt")
+
+
 def write_meta(feature_cols: list, base_dir: Path, feature_groups=None, save_src=False):
     meta = {
         "seeds": Config.SEEDS,
@@ -201,6 +211,56 @@ def load_saved_ensemble_stt(base_dir: Path, model_class: torch.nn.Module):
             models.append(m)
 
     return models, scalers, meta
+
+
+def load_saved_ensemble_separate_models_stt(base_dir: Path, model_class_1d: torch.nn.Module):
+    """
+    加载分离的 X 和 Y 模型集合
+    
+    Returns:
+        models_x: 所有 X 模型列表
+        models_y: 所有 Y 模型列表
+        scalers: 对应的 scaler 列表
+        meta: 元数据
+    """
+    meta_path = base_dir / "meta.json"
+    assert meta_path.exists(), f"meta.json not found: {meta_path}"
+    with open(meta_path, "r") as f:
+        meta = json.load(f)
+
+    feature_cols = meta["feature_cols"]
+    seeds = meta["seeds"]
+    n_folds = int(meta["n_folds"])
+
+    models_x, models_y, scalers = [], [], []
+    for seed in seeds:
+        sdir = base_dir / f"seed_{seed}"
+        for fold in range(1, n_folds + 1):
+            sc_path = sdir / f"scaler_fold{fold}.pkl"
+            model_x_path = sdir / f"model_x_fold{fold}.pt"
+            model_y_path = sdir / f"model_y_fold{fold}.pt"
+            
+            if not (sc_path.exists() and model_x_path.exists() and model_y_path.exists()):
+                print(f"[WARN] missing seed={seed} fold={fold} (separate models), skip")
+                continue
+            
+            scaler = joblib.load(sc_path)
+            
+            # 加载 X 模型
+            mx = model_class_1d(len(feature_cols)).to(Config.DEVICE)
+            mx.load_state_dict(torch.load(model_x_path, map_location=Config.DEVICE))
+            mx.eval()
+            
+            # 加载 Y 模型
+            my = model_class_1d(len(feature_cols)).to(Config.DEVICE)
+            my.load_state_dict(torch.load(model_y_path, map_location=Config.DEVICE))
+            my.eval()
+            
+            scalers.append(scaler)
+            models_x.append(mx)
+            models_y.append(my)
+
+    return models_x, models_y, scalers, meta
 
 
 def prepare_targets_stt(batch_dx, batch_dy, max_h):

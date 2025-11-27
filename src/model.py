@@ -10,8 +10,9 @@ from .config import Config
 from .utils import (
     prepare_targets_stt,
     save_fold_artifacts_stt,
+    save_fold_artifacts_separate_models_stt,
 )
-from .validation import compute_val_rmse_stt
+from .validation import compute_val_rmse_stt, compute_val_rmse_separate_models_stt
 
 
 class TemporalHuber(nn.Module):
@@ -224,6 +225,41 @@ def _build_train_batches(X_train, y_train_dx, y_train_dy, shuffle=True):
     return train_batches
 
 
+def _prepare_targets_1d(batch_1d, max_h):
+    """为单一维度(x或y)准备目标，返回shape (B, H)"""
+    tensors, masks = [], []
+    for vals in batch_1d:
+        L = len(vals)
+        padded = np.pad(vals, (0, max_h - L), constant_values=0).astype(np.float32)
+        mask = np.zeros(max_h, dtype=np.float32)
+        mask[:L] = 1.0
+        tensors.append(torch.tensor(padded))
+        masks.append(torch.tensor(mask))
+    
+    return torch.stack(tensors), torch.stack(masks)  # (B, H), (B, H)
+
+
+def _build_train_batches_1d(X_train, y_train_1d, shuffle=True):
+    """构建训练批次（支持 shuffle）- 单维度版本"""
+    indices = np.arange(len(X_train))
+    if shuffle:
+        np.random.shuffle(indices)
+    
+    train_batches = []
+    for i in range(0, len(X_train), Config.BATCH_SIZE):
+        end = min(i + Config.BATCH_SIZE, len(X_train))
+        batch_indices = indices[i:end]
+        
+        X_batch = [X_train[j] for j in batch_indices]
+        y_batch = [y_train_1d[j] for j in batch_indices]
+        
+        bx = torch.tensor(np.stack(X_batch).astype(np.float32))
+        by, bm = _prepare_targets_1d(y_batch, Config.MAX_FUTURE_HORIZON)
+        train_batches.append((bx, by, bm))
+    
+    return train_batches
+
+
 def _build_val_batches(X_val, y_val_dx, y_val_dy):
     """构建验证批次（不需要 shuffle）"""
     val_batches = []
@@ -233,6 +269,21 @@ def _build_val_batches(X_val, y_val_dx, y_val_dy):
         by, bm = prepare_targets_stt(
             [y_val_dx[j] for j in range(i, end)],
             [y_val_dy[j] for j in range(i, end)],
+            Config.MAX_FUTURE_HORIZON,
+        )
+        val_batches.append((bx, by, bm))
+    
+    return val_batches
+
+
+def _build_val_batches_1d(X_val, y_val_1d):
+    """构建验证批次（不需要 shuffle）- 单维度版本"""
+    val_batches = []
+    for i in range(0, len(X_val), Config.BATCH_SIZE):
+        end = min(i + Config.BATCH_SIZE, len(X_val))
+        bx = torch.tensor(np.stack(X_val[i:end]).astype(np.float32))
+        by, bm = _prepare_targets_1d(
+            [y_val_1d[j] for j in range(i, end)],
             Config.MAX_FUTURE_HORIZON,
         )
         val_batches.append((bx, by, bm))
@@ -326,9 +377,189 @@ def train_model_stt(
     return model, best_loss
 
 
+class STTransformer1D(nn.Module):
+    """
+    用于单维度预测的 Spatio-Temporal Transformer
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.horizon = Config.MAX_FUTURE_HORIZON
+        self.hidden_dim = Config.HIDDEN_DIM
+        self.n_heads = Config.N_HEADS
+        self.n_layers = Config.N_LAYERS
+        self.n_querys = Config.N_QUERYS
+
+        # 1. Spatio: 特征嵌入
+        self.input_projection = nn.Linear(input_dim, self.hidden_dim)
+
+        # 2. Temporal: 可学习的位置编码
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, Config.WINDOW_SIZE, self.hidden_dim)
+        )
+        self.embed_dropout = nn.Dropout(dropout)
+
+        # 3. Transformer Encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=self.n_heads,
+            dim_feedforward=self.hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=self.n_layers
+        )
+
+        # 4. Pooling
+        self.pool_ln = nn.LayerNorm(self.hidden_dim)
+        self.pool_attn = nn.MultiheadAttention(
+            self.hidden_dim, num_heads=self.n_heads, batch_first=True
+        )
+        self.pool_query = nn.Parameter(torch.randn(1, self.n_querys, self.hidden_dim))
+
+        # 5. 输出 Head - 预测单维度，输出形状 (B, H)
+        self.head = ResidualMLP(
+            input_dim=self.n_querys * self.hidden_dim,
+            hidden_dim=Config.MLP_HIDDEN_DIM,
+            output_dim=self.horizon,  # 单维度，不乘以2
+            num_layers=Config.N_RES_BLOCKS,
+            dropout=0.2,
+        )
+
+    def forward(self, x: torch.Tensor):
+        # [batch, temporal, spatio]
+        B, T, _ = x.shape
+
+        x_embed = self.input_projection(x)
+        x = x_embed + self.pos_embed[:, :T, :]
+        x = self.embed_dropout(x)
+
+        h = self.transformer_encoder(x)
+
+        q = self.pool_query.expand(B, -1, -1)
+        ctx, _ = self.pool_attn(q, self.pool_ln(h), self.pool_ln(h))
+        ctx = ctx.flatten(start_dim=1)
+
+        out = self.head(ctx)  # (B, H)
+        out = torch.cumsum(out, dim=1)
+
+        return out
+
+
+def train_model_1d(
+    X_train,
+    y_train_1d,
+    X_val,
+    y_val_1d,
+    input_dim,
+    dim_name="",
+):
+    """为单一维度(x或y)训练模型"""
+    device = Config.DEVICE
+
+    # Construct val_batches（只构建一次，不需要 shuffle）
+    val_batches = _build_val_batches_1d(X_val, y_val_1d)
+
+    # Define model, criterion, optimizer, scheduler
+    model = STTransformer1D(
+        input_dim=input_dim,
+    ).to(device)
+    
+    # 简化的 criterion，只计算单维度损失
+    def criterion_1d(pred, target, mask):
+        # pred: (B, H), target: (B, H), mask: (B, H)
+        err = pred - target
+        abs_err = torch.abs(err)
+        delta = 0.5
+        huber = torch.where(
+            abs_err <= delta,
+            0.5 * err * err,
+            delta * (abs_err - 0.5 * delta),
+        )
+        
+        L = pred.size(1)
+        t = torch.arange(L, device=pred.device, dtype=pred.dtype)
+        w = torch.exp(-0.03 * t).view(1, L)
+        huber = huber * w
+        mask = mask * w
+        
+        return (huber * mask).sum() / (mask.sum() + 1e-8)
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-5
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=5, factor=0.5
+    )
+    best_loss, best_state, bad = float("inf"), None, 0
+    start_time = time.time()
+
+    for epoch in range(1, Config.EPOCHS + 1):
+        # 每个 epoch 都重新 shuffle 并构建训练批次
+        train_batches = _build_train_batches_1d(X_train, y_train_1d, shuffle=True)
+        
+        model.train()
+        train_losses = []
+        for bx, by, bm in train_batches:
+            bx, by, bm = bx.to(device), by.to(device), bm.to(device)
+            pred = model(bx)
+            loss = criterion_1d(pred, by, bm)
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            optimizer.step()
+            train_losses.append(loss.item())
+
+        model.eval()
+        val_losses = []
+        with torch.no_grad():
+            for bx, by, bm in val_batches:
+                bx, by, bm = bx.to(device), by.to(device), bm.to(device)
+                pred = model(bx)
+                val_losses.append(criterion_1d(pred, by, bm).item())
+
+        train_loss, val_loss = np.mean(train_losses), np.mean(val_losses)
+        scheduler.step(val_loss)
+
+        if epoch % 10 == 0:
+            total_time = time.time() - start_time
+            minutes = int(total_time // 60)
+            seconds = int(total_time % 60)
+            print(
+                f"  [{dim_name}] Epoch {epoch:>3}: train={train_loss:.4f}, val={val_loss:.4f}, "
+                f"Time_elapsed={minutes:>2}min {seconds:>2}s"
+            )
+
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+            if bad >= Config.PATIENCE:
+                print(f"  [{dim_name}] Early stop at epoch {epoch}")
+                break
+
+    if best_state:
+        model.load_state_dict(best_state)
+
+    return model, best_loss
+
+
 def train_all_folds_stt(
     gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim
 ):
+    """
+    为 x 和 y 分别训练两个模型，然后合并结果进行验证
+    """
     fold_rmses = []
     all_rmse = []
     cv_log = []
@@ -349,18 +580,31 @@ def train_all_folds_stt(
         X_tr_sc = [scaler.transform(s) for s in X_tr]
         X_va_sc = [scaler.transform(s) for s in X_va]
 
-        model, loss = train_model_stt(
+        # 分别训练 X 模型和 Y 模型
+        print(f"\n[Fold {fold}] Training X model...")
+        model_x, loss_x = train_model_1d(
             X_tr_sc,
             y_tr_dx,
-            y_tr_dy,
             X_va_sc,
             y_va_dx,
-            y_va_dy,
             input_dim,
+            dim_name="X",
         )
 
-        rmse = compute_val_rmse_stt(
-            model,
+        print(f"\n[Fold {fold}] Training Y model...")
+        model_y, loss_y = train_model_1d(
+            X_tr_sc,
+            y_tr_dy,
+            X_va_sc,
+            y_va_dy,
+            input_dim,
+            dim_name="Y",
+        )
+
+        # 合并验证：使用两个模型的预测结果
+        rmse = compute_val_rmse_separate_models_stt(
+            model_x,
+            model_y,
             X_va_sc,
             [targets_dx[i] for i in va],
             [targets_dy[i] for i in va],
@@ -368,9 +612,10 @@ def train_all_folds_stt(
             Config.DEVICE,
         )
 
+        avg_loss = (loss_x + loss_y) / 2.0
         print(
             f"[VAL] seed {seed} fold {fold} → "
-            f"Huber loss={loss:.5f} | "
+            f"Huber loss_x={loss_x:.5f}, loss_y={loss_y:.5f}, avg={avg_loss:.5f} | "
             f"RMSE={rmse:.4f}"
         )
 
@@ -381,16 +626,19 @@ def train_all_folds_stt(
                 "seed": seed,
                 "fold": fold,
                 "rmse": rmse,
-                "loss": float(loss),
+                "loss_x": float(loss_x),
+                "loss_y": float(loss_y),
+                "loss_avg": float(avg_loss),
             }
         )
 
-        # Save model
-        save_fold_artifacts_stt(
+        # Save models
+        save_fold_artifacts_separate_models_stt(
             seed=seed,
             fold=fold,
             scaler=scaler,
-            model=model,
+            model_x=model_x,
+            model_y=model_y,
             base_dir=Config.SAVE_DIR,
         )
 
