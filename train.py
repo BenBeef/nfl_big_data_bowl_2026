@@ -35,25 +35,10 @@ if __name__ == '__main__':
 
     print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")
     result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
-    sequences, targets_dx, targets_dy, targets_fids, seq_meta, feature_cols = result
-
-    # 生成 player_mask: (n_plays, 22, horizon)
-    # 基于 targets_dx/dy 是否非零来确定球员是否被追踪
-    print(f"\n[2.5/4] [{timestamp()}] Creating player masks...")
-    player_masks = []
-    for dx, dy in zip(targets_dx, targets_dy):
-        # dx, dy: (22, horizon)
-        # mask: 1 如果该球员的任何目标不为零，否则 0
-        player_mask = np.zeros((dx.shape[0], dx.shape[1]), dtype=np.float32)
-        for player_idx in range(dx.shape[0]):
-            # 检查该球员是否有有效的目标 (不全为零)
-            if np.any(dx[player_idx] != 0) or np.any(dy[player_idx] != 0):
-                player_mask[player_idx, :] = 1.0
-        player_masks.append(player_mask)
+    sequences, targets_dx, targets_dy, targets_fids, seq_meta, player_masks, feature_cols = result
     
-    print(f"Created player masks for {len(player_masks)} plays")
+    print(f"  Generated player masks for {len(player_masks)} plays")
 
-    
     print(f"\n[3/4] [{timestamp()}] Training all folds (Multi-Player Model)...")
     
     input_dim = len(feature_cols)

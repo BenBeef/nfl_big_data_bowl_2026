@@ -67,7 +67,7 @@ class Config:
     # SEEDS = [42, 19, 89, 64]
     N_FOLDS = 5
     BATCH_SIZE = 256
-    EPOCHS = 200 if not DEBUG else 20
+    EPOCHS = 400 if not DEBUG else 20
     PATIENCE = 30
     LEARNING_RATE = 1e-3
 
@@ -76,7 +76,7 @@ class Config:
     HIDDEN_DIM = 128
     MAX_FUTURE_HORIZON = 55  # Number of steps to predict (filter out 94)
 
-    MAX_NUM_PLAYER = 22
+    MAX_NUM_PLAYER = 10
 
     N_HEADS = 4
     N_LAYERS = 2

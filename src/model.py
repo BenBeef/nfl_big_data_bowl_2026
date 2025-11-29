@@ -444,6 +444,7 @@ def train_all_folds_multi_player_stt(
         y_va_dx = [targets_dx[i] for i in va]
         y_tr_dy = [targets_dy[i] for i in tr]
         y_va_dy = [targets_dy[i] for i in va]
+        mask_tr = [player_mask[i] for i in tr]  # ← 训练集的mask
         mask_va = [player_mask[i] for i in va]  # ← 验证集的mask
 
         # Scaler: 需要处理多球员数据
@@ -477,9 +478,11 @@ def train_all_folds_multi_player_stt(
             X_tr_sc,
             y_tr_dx,
             y_tr_dy,
+            mask_tr,
             X_va_sc,
             y_va_dx,
             y_va_dy,
+            mask_va,
             input_dim,
         )
 
@@ -602,11 +605,13 @@ class MultiPlayerGRUTransformer(nn.Module):
         # 预测头: 输出每个球员的 2*horizon 个值
         self.pred_head = nn.Linear(self.hidden_dim, 2 * self.horizon)
     
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, tracked_mask: torch.Tensor = None) -> torch.Tensor:
         """
         Args:
             x: (batch, 22, seq_len, input_dim)
                示例: (32, 22, 10, 167)
+            tracked_mask: (batch, 22) - 可选，1表示被追踪/有效，0表示未追踪/pad
+                          示例: (32, 22)
         
         Returns:
             output: (batch, 22, horizon, 2)
@@ -633,7 +638,16 @@ class MultiPlayerGRUTransformer(nn.Module):
         
         # ============ Step 2: Transformer学习球员间交互 ============
         # 输入: (batch, 22, hidden_dim) -> 输出: (batch, 22, hidden_dim)
-        attn_out = self.transformer_encoder(h)
+        # 创建球员维度的attention mask：True表示要屏蔽的位置
+        src_key_padding_mask = None
+        if tracked_mask is not None:
+            src_key_padding_mask = (tracked_mask == 0)  # (batch, 22)
+            # print(f"[Key Padding Mask] {src_key_padding_mask.shape}")  # (32, 22)
+        
+        attn_out = self.transformer_encoder(
+            h,
+            src_key_padding_mask=src_key_padding_mask
+        )
         # print(f"[Transformer Output] {attn_out.shape}")  # (32, 22, 128)
         
         # ============ Step 3: 预测头 ============
@@ -702,7 +716,7 @@ def prepare_multi_player_targets(
     return torch.stack(batch_targets), torch.stack(batch_masks)
 
 
-def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_multi_dy, shuffle=True):
+def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_multi_dy, player_masks_multi, shuffle=True):
     """
     构建多球员训练批次
     
@@ -710,6 +724,7 @@ def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_m
         X_train_multi: List of (22, seq_len, n_features)
         y_train_multi_dx: List of (22, horizon)
         y_train_multi_dy: List of (22, horizon)
+        player_masks_multi: List of (22, horizon) - 球员有效性mask
     """
     indices = np.arange(len(X_train_multi))
     if shuffle:
@@ -723,18 +738,36 @@ def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_m
         X_batch = [X_train_multi[j] for j in batch_indices]
         y_dx_batch = [y_train_multi_dx[j] for j in batch_indices]
         y_dy_batch = [y_train_multi_dy[j] for j in batch_indices]
+        masks_batch = [player_masks_multi[j] for j in batch_indices]
         
         # Stack: (batch, 22, seq_len, n_features)
         bx = torch.tensor(np.stack(X_batch).astype(np.float32))
         by, bm = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
         
-        train_batches.append((bx, by, bm))
+        # 从 player_masks 中提取 tracked_mask
+        # tracked_mask: (batch, 22) - 1表示该球员至少有一个有效的horizon，0表示全为无效
+        btm_list = []
+        for mask in masks_batch:  # mask: (22, horizon)
+            # 如果某个球员在任何horizon位置都有效(mask>0)，则该球员被追踪
+            tracked = (mask.sum(axis=1) > 0).astype(np.float32)
+            btm_list.append(tracked)
+        btm = torch.tensor(np.stack(btm_list), dtype=torch.float32)
+        
+        train_batches.append((bx, by, bm, btm))
     
     return train_batches
 
 
-def _build_multi_player_val_batches(X_val_multi, y_val_multi_dx, y_val_multi_dy):
-    """构建多球员验证批次"""
+def _build_multi_player_val_batches(X_val_multi, y_val_multi_dx, y_val_multi_dy, player_masks_multi):
+    """
+    构建多球员验证批次
+    
+    Args:
+        X_val_multi: List of (22, seq_len, n_features)
+        y_val_multi_dx: List of (22, horizon)
+        y_val_multi_dy: List of (22, horizon)
+        player_masks_multi: List of (22, horizon) - 球员有效性mask
+    """
     val_batches = []
     for i in range(0, len(X_val_multi), Config.BATCH_SIZE):
         end = min(i + Config.BATCH_SIZE, len(X_val_multi))
@@ -742,11 +775,19 @@ def _build_multi_player_val_batches(X_val_multi, y_val_multi_dx, y_val_multi_dy)
         X_batch = [X_val_multi[j] for j in range(i, end)]
         y_dx_batch = [y_val_multi_dx[j] for j in range(i, end)]
         y_dy_batch = [y_val_multi_dy[j] for j in range(i, end)]
+        masks_batch = [player_masks_multi[j] for j in range(i, end)]
         
         bx = torch.tensor(np.stack(X_batch).astype(np.float32))
         by, bm = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
         
-        val_batches.append((bx, by, bm))
+        # 从 player_masks 中提取 tracked_mask
+        btm_list = []
+        for mask in masks_batch:  # mask: (22, horizon)
+            tracked = (mask.sum(axis=1) > 0).astype(np.float32)
+            btm_list.append(tracked)
+        btm = torch.tensor(np.stack(btm_list), dtype=torch.float32)
+        
+        val_batches.append((bx, by, bm, btm))
     
     return val_batches
 
@@ -798,9 +839,11 @@ def train_model_multi_player(
     X_train_multi,
     y_train_multi_dx,
     y_train_multi_dy,
+    player_masks_train,
     X_val_multi,
     y_val_multi_dx,
     y_val_multi_dy,
+    player_masks_val,
     input_dim,
 ):
     """
@@ -810,12 +853,18 @@ def train_model_multi_player(
         X_train_multi: List of (22, seq_len, input_dim)
         y_train_multi_dx: List of (22, horizon)
         y_train_multi_dy: List of (22, horizon)
+        player_masks_train: List of (22, horizon) - 训练集球员mask
+        X_val_multi: List of (22, seq_len, input_dim)
+        y_val_multi_dx: List of (22, horizon)
+        y_val_multi_dy: List of (22, horizon)
+        player_masks_val: List of (22, horizon) - 验证集球员mask
+        input_dim: 特征维度
     """
     device = Config.DEVICE
     
     # 构建验证批次
     val_batches = _build_multi_player_val_batches(
-        X_val_multi, y_val_multi_dx, y_val_multi_dy
+        X_val_multi, y_val_multi_dx, y_val_multi_dy, player_masks_val
     )
     
     # 定义模型
@@ -837,19 +886,16 @@ def train_model_multi_player(
     for epoch in range(1, Config.EPOCHS + 1):
         # 构建训练批次
         train_batches = _build_multi_player_train_batches(
-            X_train_multi, y_train_multi_dx, y_train_multi_dy, shuffle=True
+            X_train_multi, y_train_multi_dx, y_train_multi_dy, player_masks_train, shuffle=True
         )
         
         model.train()
         train_losses = []
-        for bx, by, bm in train_batches:
-            bx, by, bm = bx.to(device), by.to(device), bm.to(device)
-            pred = model(bx)
+        for bx, by, bm, btm in train_batches:
+            bx, by, bm, btm = bx.to(device), by.to(device), bm.to(device), btm.to(device)
+            pred = model(bx, tracked_mask=btm)
             
-            # 创建tracked_mask (这里假设全部都被追踪，可以从数据中读取)
-            tracked_mask = torch.ones(bx.shape[0], Config.MAX_NUM_PLAYER, device=device)
-            
-            loss = criterion_multi_player(pred, by, bm, tracked_mask)
+            loss = criterion_multi_player(pred, by, bm, btm)
             
             optimizer.zero_grad()
             loss.backward()
@@ -861,12 +907,11 @@ def train_model_multi_player(
         model.eval()
         val_losses = []
         with torch.no_grad():
-            for bx, by, bm in val_batches:
-                bx, by, bm = bx.to(device), by.to(device), bm.to(device)
-                pred = model(bx)
+            for bx, by, bm, btm in val_batches:
+                bx, by, bm, btm = bx.to(device), by.to(device), bm.to(device), btm.to(device)
+                pred = model(bx, tracked_mask=btm)
                 
-                tracked_mask = torch.ones(bx.shape[0], Config.MAX_NUM_PLAYER, device=device)
-                val_loss = criterion_multi_player(pred, by, bm, tracked_mask)
+                val_loss = criterion_multi_player(pred, by, bm, btm)
                 val_losses.append(val_loss.item())
         
         train_loss = np.mean(train_losses)

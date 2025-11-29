@@ -135,7 +135,10 @@ def _convert_to_multi_player_format(
     sequences_multi = []
     targets_dx_multi = []
     targets_dy_multi = []
+    player_masks_multi = []
     seq_meta_multi = []
+
+    max_player_slot = -1
     
     for (gid, pid), player_indices in play_groups.items():
         # 该 play 中的球员数
@@ -146,25 +149,33 @@ def _convert_to_multi_player_format(
         play_seqs = np.zeros((n_players, seq_len, n_features), dtype=np.float32)
         play_targets_dx = np.zeros((n_players, max_horizon), dtype=np.float32)
         play_targets_dy = np.zeros((n_players, max_horizon), dtype=np.float32)
+
+        max_player_slot = max(max_player_slot, len(player_indices))
         
-        # 填充实际的球员数据
+        # 初始化 mask
+        play_mask = np.zeros((n_players, max_horizon), dtype=np.float32)
+        
+        # 填充实际的球员数据和生成 mask
         for player_slot, idx in enumerate(player_indices):
             if player_slot < n_players:
                 play_seqs[player_slot] = sequences[idx]
-                if targets_dx and idx < len(targets_dx):
+                
+                # 填充值和mask
+                if targets_dx and idx < len(targets_dx) and len(targets_dx[idx]) > 0:
                     dx_val = targets_dx[idx]
-                    # 填充到 max_horizon 长度 (不足的用0填充)
                     play_targets_dx[player_slot, :len(dx_val)] = dx_val
-                if targets_dy and idx < len(targets_dy):
+                    # dy值填充
                     dy_val = targets_dy[idx]
-                    # 填充到 max_horizon 长度 (不足的用0填充)
                     play_targets_dy[player_slot, :len(dy_val)] = dy_val
+                    # mask值
+                    play_mask[player_slot, :len(dx_val)] = 1.0
         
         sequences_multi.append(play_seqs)
         if targets_dx:
             targets_dx_multi.append(play_targets_dx)
         if targets_dy:
             targets_dy_multi.append(play_targets_dy)
+        player_masks_multi.append(play_mask)
         
         # Play级别的元数据 (取第一个球员的信息)
         first_meta = seq_meta[player_indices[0]]
@@ -177,7 +188,9 @@ def _convert_to_multi_player_format(
         }
         seq_meta_multi.append(play_meta)
     
-    return sequences_multi, targets_dx_multi, targets_dy_multi, seq_meta_multi
+    print(f'Max predicted players per play, max_player_slot= {max_player_slot}')
+    
+    return sequences_multi, targets_dx_multi, targets_dy_multi, player_masks_multi, seq_meta_multi
 
 
 def prepare_sequences_with_advanced_features(
@@ -297,7 +310,7 @@ def prepare_sequences_with_advanced_features(
     # ========================================================================
     print(f"\nConverting to multi-player format (for MultiPlayerGRUTransformer)...")
     
-    sequences_multi, targets_dx_multi, targets_dy_multi, seq_meta_multi = _convert_to_multi_player_format(
+    sequences_multi, targets_dx_multi, targets_dy_multi, player_masks_multi, seq_meta_multi = _convert_to_multi_player_format(
         sequences, 
         targets_dx, 
         targets_dy, 
@@ -319,6 +332,7 @@ def prepare_sequences_with_advanced_features(
             targets_dy_multi,
             targets_fids,
             seq_meta_multi,
+            player_masks_multi,
             feature_cols,
         )
-    return sequences_multi, seq_meta_multi, feature_cols
+    return sequences_multi, seq_meta_multi, feature_cols, player_masks_multi
