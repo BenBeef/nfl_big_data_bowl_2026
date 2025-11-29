@@ -11,7 +11,7 @@ from .utils import (
     prepare_targets_stt,
     save_fold_artifacts_stt,
 )
-from .validation import compute_val_rmse_stt
+from .validation import compute_val_rmse_stt, compute_val_rmse_multi_player_stt
 
 
 class TemporalHuber(nn.Module):
@@ -329,6 +329,10 @@ def train_model_stt(
 def train_all_folds_stt(
     gkf, sequences, groups, targets_dx, targets_dy, seed, input_dim
 ):
+    """
+    旧版本：单球员训练（已弃用）
+    """
+    print("[WARN] 使用旧版本 train_all_folds_stt（单球员）")
     fold_rmses = []
     all_rmse = []
     cv_log = []
@@ -400,3 +404,495 @@ def train_all_folds_stt(
     )
 
     return all_rmse, cv_log
+
+
+def train_all_folds_multi_player_stt(
+    gkf, sequences, groups, targets_dx, targets_dy, player_mask, seed, input_dim
+):
+    """
+    新版本：多球员模型训练
+    
+    Args:
+        gkf: GroupKFold分割器
+        sequences: List[(22, seq_len, n_features)] - 多球员格式
+        groups: 分组标签 (game_id)
+        targets_dx: List[(22, horizon)] - 多球员位移
+        targets_dy: List[(22, horizon)]
+        player_mask: List[(22, horizon)] - 每个player的有效位置mask
+        seed: 随机种子
+        input_dim: 特征维度 (167)
+    
+    Returns:
+        all_rmse: 所有fold的RMSE列表
+        cv_log: 交叉验证日志
+    """
+    fold_rmses = []
+    all_rmse = []
+    cv_log = []
+    
+    print(f"\n{'='*70}")
+    print(f"多球员模型训练 - MultiPlayerGRUTransformer")
+    print(f"{'='*70}")
+
+    for fold, (tr, va) in enumerate(gkf.split(sequences, y=None, groups=groups), 1):
+        print(f"\n{'-'*70}\nFold {fold}/{Config.N_FOLDS} (seed {seed})\n{'-'*70}")
+
+        # 多球员数据格式
+        X_tr = [sequences[i] for i in tr]  # List[(22, seq_len, n_features)]
+        X_va = [sequences[i] for i in va]
+        y_tr_dx = [targets_dx[i] for i in tr]  # List[(22, horizon)]
+        y_va_dx = [targets_dx[i] for i in va]
+        y_tr_dy = [targets_dy[i] for i in tr]
+        y_va_dy = [targets_dy[i] for i in va]
+        mask_va = [player_mask[i] for i in va]  # ← 验证集的mask
+
+        # Scaler: 需要处理多球员数据
+        # 将所有序列和球员展平用于fit
+        X_tr_flat = []
+        for seq in X_tr:  # seq: (22, seq_len, n_features)
+            for player_seq in seq:  # player_seq: (seq_len, n_features)
+                X_tr_flat.append(player_seq)
+        
+        scaler = StandardScaler()
+        scaler.fit(np.vstack(X_tr_flat))
+
+        # 对每个序列的每个球员应用scaler
+        X_tr_sc = []
+        for seq in X_tr:  # seq: (22, seq_len, n_features)
+            seq_scaled = np.zeros_like(seq, dtype=np.float32)
+            for player_idx in range(22):
+                seq_scaled[player_idx] = scaler.transform(seq[player_idx])
+            X_tr_sc.append(seq_scaled)
+        
+        X_va_sc = []
+        for seq in X_va:
+            seq_scaled = np.zeros_like(seq, dtype=np.float32)
+            for player_idx in range(22):
+                seq_scaled[player_idx] = scaler.transform(seq[player_idx])
+            X_va_sc.append(seq_scaled)
+
+        # 训练多球员模型
+        print(f"  Training {len(X_tr)} plays with {len(X_tr_sc[0]) if X_tr_sc else 0} players each...")
+        model, loss = train_model_multi_player(
+            X_tr_sc,
+            y_tr_dx,
+            y_tr_dy,
+            X_va_sc,
+            y_va_dx,
+            y_va_dy,
+            input_dim,
+        )
+
+        # 验证
+        print(f"  Validating on {len(X_va)} plays...")
+        rmse = compute_val_rmse_multi_player_stt(
+            model,
+            X_va_sc,
+            y_va_dx,
+            y_va_dy,
+            mask_va,
+            Config.MAX_FUTURE_HORIZON,
+            Config.DEVICE,
+        )
+
+        print(
+            f"[VAL] seed {seed} fold {fold} → "
+            f"Huber loss={loss:.5f} | "
+            f"RMSE={rmse:.4f}"
+        )
+
+        fold_rmses.append(rmse)
+        all_rmse.append(rmse)
+        cv_log.append(
+            {
+                "seed": seed,
+                "fold": fold,
+                "rmse": rmse,
+                "loss": float(loss),
+                "model_type": "multi_player",
+            }
+        )
+
+        # Save model
+        save_fold_artifacts_stt(
+            seed=seed,
+            fold=fold,
+            scaler=scaler,
+            model=model,
+            base_dir=Config.SAVE_DIR,
+        )
+        print(f"  Model saved for fold {fold}")
+
+    print(
+        f"\n{'='*70}\n"
+        f"[SEED SUMMARY] seed {seed} RMSEs: {[f'{r:.4f}' for r in fold_rmses]} | "
+        f"mean={float(np.mean(fold_rmses)):.4f} yards\n"
+        f"{'='*70}\n"
+    )
+
+    return all_rmse, cv_log
+
+
+# ============================================================================
+#                    多球员 GRU-Transformer 架构
+# ============================================================================
+
+class MultiPlayerGRUTransformer(nn.Module):
+    """
+    多球员空间-时间模型，用GRU处理每个球员的时序，用Transformer学习球员间交互
+    
+    Shape分析：
+    ────────────────────────────────────────────────────────────────────
+    输入:  (batch, n_players=22, seq_len, input_dim)
+           示例: (32, 22, 10, 167)
+    ────────────────────────────────────────────────────────────────────
+    GRU处理 (seq_len维):
+           输入 reshape:  (batch*22, seq_len, input_dim) = (704, 10, 167)
+           GRU 输出:      (704, seq_len, hidden_dim) = (704, 10, 128)
+           取最后帧:      (704, hidden_dim) = (704, 128)
+           reshape回:     (batch, 22, hidden_dim) = (32, 22, 128)
+    ────────────────────────────────────────────────────────────────────
+    Transformer (player维):
+           输入:  (batch, 22, hidden_dim) = (32, 22, 128)
+           输出:  (batch, 22, hidden_dim) = (32, 22, 128)
+    ────────────────────────────────────────────────────────────────────
+    预测头 (Linear层):
+           输入:  (batch, 22, hidden_dim) = (32, 22, 128)
+           输出:  (batch, 22, 2*horizon) = (32, 22, 110)
+    ────────────────────────────────────────────────────────────────────
+    Reshape分离维度:
+           (batch, 22, 2*horizon) → (batch, 22, horizon, 2)
+           (32, 22, 110) → (32, 22, 55, 2)
+    ────────────────────────────────────────────────────────────────────
+    Cumsum (horizon维):
+           输入:  (batch, 22, horizon, 2) = (32, 22, 55, 2)
+           输出:  (batch, 22, horizon, 2) = (32, 22, 55, 2)
+           [每个球员各自在horizon维度累积]
+    ────────────────────────────────────────────────────────────────────
+    """
+    
+    def __init__(self, input_dim: int, n_players: int = 22, dropout: float = 0.1):
+        super().__init__()
+        self.n_players = n_players
+        self.horizon = Config.MAX_FUTURE_HORIZON
+        self.hidden_dim = Config.HIDDEN_DIM
+        
+        # GRU: 处理时序维度 (每个球员)
+        self.gru = nn.GRU(
+            input_size=input_dim,
+            hidden_size=self.hidden_dim,
+            batch_first=True,
+            dropout=dropout if Config.N_LAYERS > 1 else 0
+        )
+        
+        # Transformer: 学习球员间交互
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=Config.N_HEADS,
+            dim_feedforward=self.hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, 
+            num_layers=Config.N_LAYERS
+        )
+        
+        # 预测头: 输出每个球员的 2*horizon 个值
+        self.pred_head = nn.Linear(self.hidden_dim, 2 * self.horizon)
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, 22, seq_len, input_dim)
+               示例: (32, 22, 10, 167)
+        
+        Returns:
+            output: (batch, 22, horizon, 2)
+                    示例: (32, 22, 55, 2)
+        """
+        batch_size, n_players, seq_len, input_dim = x.shape
+        
+        # ============ Step 1: GRU处理时序维度 ============
+        # reshape: (batch, 22, seq_len, input_dim) -> (batch*22, seq_len, input_dim)
+        x_flat = x.view(batch_size * n_players, seq_len, input_dim)
+        # print(f"[GRU Input] {x_flat.shape}")  # (704, 10, 167)
+        
+        # GRU: (batch*22, seq_len, input_dim) -> (batch*22, seq_len, hidden_dim)
+        gru_out, _ = self.gru(x_flat)
+        # print(f"[GRU Output] {gru_out.shape}")  # (704, 10, 128)
+        
+        # 取最后一帧的hidden state
+        h = gru_out[:, -1, :]  # (batch*22, hidden_dim)
+        # print(f"[GRU Last Frame] {h.shape}")  # (704, 128)
+        
+        # reshape回: (batch*22, hidden_dim) -> (batch, 22, hidden_dim)
+        h = h.view(batch_size, n_players, self.hidden_dim)
+        # print(f"[After Reshape] {h.shape}")  # (32, 22, 128)
+        
+        # ============ Step 2: Transformer学习球员间交互 ============
+        # 输入: (batch, 22, hidden_dim) -> 输出: (batch, 22, hidden_dim)
+        attn_out = self.transformer_encoder(h)
+        # print(f"[Transformer Output] {attn_out.shape}")  # (32, 22, 128)
+        
+        # ============ Step 3: 预测头 ============
+        # 输入: (batch, 22, hidden_dim) -> 输出: (batch, 22, 2*horizon)
+        pred = self.pred_head(attn_out)
+        # print(f"[Pred Head Output] {pred.shape}")  # (32, 22, 110)
+        
+        # ============ Step 4: Reshape分离 dx/dy 和 horizon ============
+        # (batch, 22, 2*horizon) -> (batch, 22, horizon, 2)
+        pred = pred.view(batch_size, n_players, self.horizon, 2)
+        # print(f"[After Reshape] {pred.shape}")  # (32, 22, 55, 2)
+        
+        # ============ Step 5: Cumsum (每个球员各自在horizon维度) ============
+        # 在 dim=2 (horizon维度) 累积
+        output = torch.cumsum(pred, dim=2)
+        # print(f"[Final Output] {output.shape}")  # (32, 22, 55, 2)
+        
+        return output
+
+
+def prepare_multi_player_targets(
+    batch_players_dx, batch_players_dy, max_h, n_players=22
+):
+    """
+    为多球员模型准备目标
+    
+    Args:
+        batch_players_dx: List[(n_players, horizon)] - 各 horizon 长度可能不同
+        batch_players_dy: List[(n_players, horizon)] - 各 horizon 长度可能不同
+        max_h: 最大horizon（用于填充）
+        n_players: 球员数
+    
+    Returns:
+        targets: (batch, 22, max_h, 2)
+        masks: (batch, 22, max_h)
+    """
+    batch_targets = []
+    batch_masks = []
+    
+    for players_dx, players_dy in zip(batch_players_dx, batch_players_dy):
+        # players_dx: (n_players, horizon_i)  - 长度可能不同
+        # players_dy: (n_players, horizon_i)
+        
+        # 获取实际的 horizon 长度
+        actual_horizon = players_dx.shape[1]
+        
+        # 如果长度不足 max_h，进行填充
+        if actual_horizon < max_h:
+            pad_len = max_h - actual_horizon
+            players_dx = np.pad(players_dx, ((0, 0), (0, pad_len)), mode='constant', constant_values=0.0)
+            players_dy = np.pad(players_dy, ((0, 0), (0, pad_len)), mode='constant', constant_values=0.0)
+        
+        # 转换成tensor
+        dx_t = torch.tensor(players_dx[:, :max_h], dtype=torch.float32)
+        dy_t = torch.tensor(players_dy[:, :max_h], dtype=torch.float32)
+        
+        # stack: (n_players, max_h, 2)
+        player_target = torch.stack([dx_t, dy_t], dim=-1)
+        batch_targets.append(player_target)
+        
+        # mask: (n_players, max_h) - 全1表示所有位置都有效
+        mask = torch.ones(n_players, max_h, dtype=torch.float32)
+        batch_masks.append(mask)
+    
+    # 输出: (batch, 22, max_h, 2) 和 (batch, 22, max_h)
+    return torch.stack(batch_targets), torch.stack(batch_masks)
+
+
+def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_multi_dy, shuffle=True):
+    """
+    构建多球员训练批次
+    
+    Args:
+        X_train_multi: List of (22, seq_len, n_features)
+        y_train_multi_dx: List of (22, horizon)
+        y_train_multi_dy: List of (22, horizon)
+    """
+    indices = np.arange(len(X_train_multi))
+    if shuffle:
+        np.random.shuffle(indices)
+    
+    train_batches = []
+    for i in range(0, len(X_train_multi), Config.BATCH_SIZE):
+        end = min(i + Config.BATCH_SIZE, len(X_train_multi))
+        batch_indices = indices[i:end]
+        
+        X_batch = [X_train_multi[j] for j in batch_indices]
+        y_dx_batch = [y_train_multi_dx[j] for j in batch_indices]
+        y_dy_batch = [y_train_multi_dy[j] for j in batch_indices]
+        
+        # Stack: (batch, 22, seq_len, n_features)
+        bx = torch.tensor(np.stack(X_batch).astype(np.float32))
+        by, bm = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
+        
+        train_batches.append((bx, by, bm))
+    
+    return train_batches
+
+
+def _build_multi_player_val_batches(X_val_multi, y_val_multi_dx, y_val_multi_dy):
+    """构建多球员验证批次"""
+    val_batches = []
+    for i in range(0, len(X_val_multi), Config.BATCH_SIZE):
+        end = min(i + Config.BATCH_SIZE, len(X_val_multi))
+        
+        X_batch = [X_val_multi[j] for j in range(i, end)]
+        y_dx_batch = [y_val_multi_dx[j] for j in range(i, end)]
+        y_dy_batch = [y_val_multi_dy[j] for j in range(i, end)]
+        
+        bx = torch.tensor(np.stack(X_batch).astype(np.float32))
+        by, bm = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
+        
+        val_batches.append((bx, by, bm))
+    
+    return val_batches
+
+
+def criterion_multi_player(pred, target, player_mask, tracked_mask):
+    """
+    多球员损失函数
+    
+    Args:
+        pred: (batch, 22, horizon, 2) - 模型预测
+        target: (batch, 22, horizon, 2) - 真实轨迹
+        player_mask: (batch, 22, horizon) - 有效帧mask
+        tracked_mask: (batch, 22) - 被追踪球员mask
+    
+    Returns:
+        scalar loss
+    """
+    # 计算误差
+    err = pred - target
+    abs_err = torch.abs(err)
+    
+    # Huber损失
+    delta = 0.5
+    huber = torch.where(
+        abs_err <= delta,
+        0.5 * err * err,
+        delta * (abs_err - 0.5 * delta),
+    )
+    
+    # 时间衰减权重
+    horizon = pred.size(2)
+    t = torch.arange(horizon, device=pred.device, dtype=pred.dtype)
+    w_time = torch.exp(-0.03 * t).view(1, 1, -1, 1)
+    huber = huber * w_time
+    
+    # 应用player mask (只计算被追踪的球员)
+    tracked_mask = tracked_mask.unsqueeze(-1).unsqueeze(-1)  # (batch, 22, 1, 1)
+    player_mask = player_mask.unsqueeze(-1)  # (batch, 22, horizon, 1)
+    
+    final_mask = tracked_mask * player_mask * w_time
+    
+    # 计算损失
+    loss = (huber * final_mask).sum() / (final_mask.sum() + 1e-8)
+    
+    return loss
+
+
+def train_model_multi_player(
+    X_train_multi,
+    y_train_multi_dx,
+    y_train_multi_dy,
+    X_val_multi,
+    y_val_multi_dx,
+    y_val_multi_dy,
+    input_dim,
+):
+    """
+    训练多球员模型
+    
+    Args:
+        X_train_multi: List of (22, seq_len, input_dim)
+        y_train_multi_dx: List of (22, horizon)
+        y_train_multi_dy: List of (22, horizon)
+    """
+    device = Config.DEVICE
+    
+    # 构建验证批次
+    val_batches = _build_multi_player_val_batches(
+        X_val_multi, y_val_multi_dx, y_val_multi_dy
+    )
+    
+    # 定义模型
+    model = MultiPlayerGRUTransformer(
+        input_dim=input_dim,
+        n_players=22,
+    ).to(device)
+    
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-5
+    )
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, patience=5, factor=0.5
+    )
+    
+    best_loss, best_state, bad = float("inf"), None, 0
+    start_time = time.time()
+    
+    for epoch in range(1, Config.EPOCHS + 1):
+        # 构建训练批次
+        train_batches = _build_multi_player_train_batches(
+            X_train_multi, y_train_multi_dx, y_train_multi_dy, shuffle=True
+        )
+        
+        model.train()
+        train_losses = []
+        for bx, by, bm in train_batches:
+            bx, by, bm = bx.to(device), by.to(device), bm.to(device)
+            pred = model(bx)
+            
+            # 创建tracked_mask (这里假设全部都被追踪，可以从数据中读取)
+            tracked_mask = torch.ones(bx.shape[0], 22, device=device)
+            
+            loss = criterion_multi_player(pred, by, bm, tracked_mask)
+            
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            
+            train_losses.append(loss.item())
+        
+        model.eval()
+        val_losses = []
+        with torch.no_grad():
+            for bx, by, bm in val_batches:
+                bx, by, bm = bx.to(device), by.to(device), bm.to(device)
+                pred = model(bx)
+                
+                tracked_mask = torch.ones(bx.shape[0], 22, device=device)
+                val_loss = criterion_multi_player(pred, by, bm, tracked_mask)
+                val_losses.append(val_loss.item())
+        
+        train_loss = np.mean(train_losses)
+        val_loss = np.mean(val_losses)
+        scheduler.step(val_loss)
+        
+        if epoch % 10 == 0:
+            total_time = time.time() - start_time
+            minutes = int(total_time // 60)
+            seconds = int(total_time % 60)
+            print(
+                f"  Epoch {epoch:>3}: train={train_loss:.4f}, val={val_loss:.4f}, "
+                f"Time_elapsed={minutes:>2}min {seconds:>2}s"
+            )
+        
+        if val_loss < best_loss:
+            best_loss = val_loss
+            best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            bad = 0
+        else:
+            bad += 1
+            if bad >= Config.PATIENCE:
+                print(f"  Early stop at epoch {epoch}")
+                break
+    
+    if best_state:
+        model.load_state_dict(best_state)
+    
+    return model, best_loss

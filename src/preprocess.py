@@ -93,6 +93,93 @@ def _process_group_batch(
     return sequences, targets_dx, targets_dy, targets_fids, seq_meta
 
 
+def _convert_to_multi_player_format(
+    sequences: list,
+    targets_dx: list,
+    targets_dy: list,
+    seq_meta: list,
+    seq_len: int,
+    n_features: int,
+    n_players: int = 22,
+):
+    """
+    将单个球员格式的序列转换为多球员格式 (play, n_players, seq_len, n_features)
+    
+    Args:
+        sequences: List of (seq_len, n_features) - 所有球员的序列
+        targets_dx: List of (horizon,) - 位移目标 (x方向)
+        targets_dy: List of (horizon,) - 位移目标 (y方向)
+        seq_meta: List of dict - 序列元数据
+        seq_len: 序列长度
+        n_features: 特征维度
+        n_players: 每个play的球员数 (默认22)
+    
+    Returns:
+        sequences_multi: List of (n_players, seq_len, n_features)
+        targets_dx_multi: List of (n_players, Config.MAX_FUTURE_HORIZON)
+        targets_dy_multi: List of (n_players, Config.MAX_FUTURE_HORIZON)
+        seq_meta_multi: List of dict - play级别的元数据
+    """
+    # 直接使用 Config 中的最大 horizon
+    max_horizon = Config.MAX_FUTURE_HORIZON
+    
+    # 按 (game_id, play_id) 分组
+    play_groups = {}  # key: (game_id, play_id), value: list of indices
+    
+    for idx, meta in enumerate(seq_meta):
+        play_key = (meta["game_id"], meta["play_id"])
+        if play_key not in play_groups:
+            play_groups[play_key] = []
+        play_groups[play_key].append(idx)
+    
+    sequences_multi = []
+    targets_dx_multi = []
+    targets_dy_multi = []
+    seq_meta_multi = []
+    
+    for (gid, pid), player_indices in play_groups.items():
+        # 该 play 中的球员数
+        n_actual_players = len(player_indices)
+        
+        # 初始化多球员序列 (n_players, seq_len, n_features)
+        # 使用 n_players 来标准化，不足的用零填充
+        play_seqs = np.zeros((n_players, seq_len, n_features), dtype=np.float32)
+        play_targets_dx = np.zeros((n_players, max_horizon), dtype=np.float32)
+        play_targets_dy = np.zeros((n_players, max_horizon), dtype=np.float32)
+        
+        # 填充实际的球员数据
+        for player_slot, idx in enumerate(player_indices):
+            if player_slot < n_players:
+                play_seqs[player_slot] = sequences[idx]
+                if targets_dx and idx < len(targets_dx):
+                    dx_val = targets_dx[idx]
+                    # 填充到 max_horizon 长度 (不足的用0填充)
+                    play_targets_dx[player_slot, :len(dx_val)] = dx_val
+                if targets_dy and idx < len(targets_dy):
+                    dy_val = targets_dy[idx]
+                    # 填充到 max_horizon 长度 (不足的用0填充)
+                    play_targets_dy[player_slot, :len(dy_val)] = dy_val
+        
+        sequences_multi.append(play_seqs)
+        if targets_dx:
+            targets_dx_multi.append(play_targets_dx)
+        if targets_dy:
+            targets_dy_multi.append(play_targets_dy)
+        
+        # Play级别的元数据 (取第一个球员的信息)
+        first_meta = seq_meta[player_indices[0]]
+        play_meta = {
+            "game_id": gid,
+            "play_id": pid,
+            "frame_id": first_meta["frame_id"],
+            "play_direction": first_meta["play_direction"],
+            "n_players": n_actual_players,
+        }
+        seq_meta_multi.append(play_meta)
+    
+    return sequences_multi, targets_dx_multi, targets_dy_multi, seq_meta_multi
+
+
 def prepare_sequences_with_advanced_features(
     input_df: pd.DataFrame,
     output_df: pd.DataFrame,
@@ -100,7 +187,7 @@ def prepare_sequences_with_advanced_features(
 ):
 
     print(f"\n{'='*80}")
-    print(f"PREPARING SEQUENCES WITH ADVANCED FEATURES (UNIFIED FRAME)")
+    print(f"PREPARING SEQUENCES WITH ADVANCED FEATURES (MULTI-PLAYER FORMAT)")
     print(f"{'='*80}")
     print(f"Window size: {Config.WINDOW_SIZE}")
 
@@ -205,13 +292,33 @@ def prepare_sequences_with_advanced_features(
     print(f"Created {len(sequences)} sequences with {len(feature_cols)} features each")
     print(f"Time to build sequences: {end_time - start_time:.2f} seconds")
 
+    # ========================================================================
+    # 转换为多球员格式: (play, 22, seq_len, input_dim)
+    # ========================================================================
+    print(f"\nConverting to multi-player format (for MultiPlayerGRUTransformer)...")
+    
+    sequences_multi, targets_dx_multi, targets_dy_multi, seq_meta_multi = _convert_to_multi_player_format(
+        sequences, 
+        targets_dx, 
+        targets_dy, 
+        seq_meta,
+        Config.WINDOW_SIZE,
+        len(feature_cols)
+    )
+    
+    print(f"Multi-player sequences: {len(sequences_multi)} plays, each with 22 players")
+    if len(sequences_multi) > 0:
+        print(f"  Shape per play: (22, {Config.WINDOW_SIZE}, {len(feature_cols)})")
+        if targets_dx_multi:
+            print(f"  Target shapes: (22, {targets_dx_multi[0].shape[1]})")
+
     if Config.TRAIN:
         return (
-            sequences,
-            targets_dx,
-            targets_dy,
+            sequences_multi,
+            targets_dx_multi,
+            targets_dy_multi,
             targets_fids,
-            seq_meta,
+            seq_meta_multi,
             feature_cols,
         )
-    return sequences, seq_meta, feature_cols
+    return sequences_multi, seq_meta_multi, feature_cols
