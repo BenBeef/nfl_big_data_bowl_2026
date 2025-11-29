@@ -189,10 +189,10 @@ class TemporalTransformerEncoder(nn.Module):
         # Attention pooling：用可学习的 query 从时序序列中汇聚信息
         q = self.pool_query.expand(B, -1, -1)  # (B, n_querys, hidden_dim)
         ctx, _ = self.pool_attn(q, self.pool_ln(h), self.pool_ln(h))  # (B, n_querys, hidden_dim)
-        ctx = ctx.flatten(start_dim=1)  # (B, n_querys * hidden_dim)
+        output = ctx.flatten(start_dim=1)  # (B, n_querys * hidden_dim)
         
         # 投影回 hidden_dim
-        output = F.gelu(self.pool_proj(ctx))  # (B, hidden_dim)
+        # output = F.gelu(self.pool_proj(ctx))  # (B, hidden_dim)
         
         return output  # (B, hidden_dim)
 

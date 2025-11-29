@@ -380,7 +380,11 @@ Model saved for fold 5
 ======================================================================
 
 
-开发中：
+开发中1：
 修改：gru -> transformer + attention
 [VAL] seed 0 fold 1 → Huber loss=0.04623 | RMSE=0.9794
 Model saved for fold 1
+
+开发中2：
+修改：开发中1 + 去掉F.gelu(self.pool_proj(ctx))
+[VAL] seed 0 fold 1 → Huber loss=0.04207 | RMSE=0.9179
