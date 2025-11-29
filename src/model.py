@@ -118,6 +118,85 @@ class ResidualMLP(nn.Module):
         return self.net(x)
 
 
+class TemporalTransformerEncoder(nn.Module):
+    """
+    时序 Transformer 编码器
+    用于处理单个球员的序列，在帧维度（horizon）上做 attention
+    
+    输入: (batch, seq_len, input_dim)
+    输出: (batch, hidden_dim)
+    """
+    
+    def __init__(self, input_dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.hidden_dim = Config.HIDDEN_DIM
+        self.n_heads = Config.N_HEADS
+        self.n_layers = Config.N_LAYERS
+        self.n_querys = Config.N_QUERYS
+        
+        # 1. 特征投影
+        self.input_projection = nn.Linear(input_dim, self.hidden_dim)
+        
+        # 2. 位置编码
+        self.pos_embed = nn.Parameter(
+            torch.randn(1, Config.WINDOW_SIZE, self.hidden_dim)
+        )
+        self.embed_dropout = nn.Dropout(dropout)
+        
+        # 3. Transformer Encoder（在时序维度）
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=self.hidden_dim,
+            nhead=self.n_heads,
+            dim_feedforward=self.hidden_dim * 4,
+            dropout=dropout,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer, num_layers=self.n_layers
+        )
+        
+        # 4. Attention Pooling
+        self.pool_ln = nn.LayerNorm(self.hidden_dim)
+        self.pool_attn = nn.MultiheadAttention(
+            self.hidden_dim, num_heads=self.n_heads, batch_first=True
+        )
+        self.pool_query = nn.Parameter(torch.randn(1, self.n_querys, self.hidden_dim))
+        
+        # 5. 汇聚投影层
+        self.pool_proj = nn.Linear(self.n_querys * self.hidden_dim, self.hidden_dim)
+    
+    def forward(self, x: torch.Tensor):
+        """
+        Args:
+            x: (batch, seq_len, input_dim)
+        
+        Returns:
+            output: (batch, hidden_dim) - 时序汇聚后的特征
+        """
+        B, T, _ = x.shape
+        
+        # 投影到 hidden_dim
+        x_embed = self.input_projection(x)  # (B, T, hidden_dim)
+        
+        # 加上位置编码
+        x = x_embed + self.pos_embed[:, :T, :]
+        x = self.embed_dropout(x)
+        
+        # Transformer 编码
+        h = self.transformer_encoder(x)  # (B, T, hidden_dim)
+        
+        # Attention pooling：用可学习的 query 从时序序列中汇聚信息
+        q = self.pool_query.expand(B, -1, -1)  # (B, n_querys, hidden_dim)
+        ctx, _ = self.pool_attn(q, self.pool_ln(h), self.pool_ln(h))  # (B, n_querys, hidden_dim)
+        ctx = ctx.flatten(start_dim=1)  # (B, n_querys * hidden_dim)
+        
+        # 投影回 hidden_dim
+        output = F.gelu(self.pool_proj(ctx))  # (B, hidden_dim)
+        
+        return output  # (B, hidden_dim)
+
+
 class STTransformer(nn.Module):
     """
     Spatio-Temporal Transformer
@@ -580,15 +659,14 @@ class MultiPlayerGRUTransformer(nn.Module):
         self.horizon = Config.MAX_FUTURE_HORIZON
         self.hidden_dim = Config.HIDDEN_DIM
         
-        # GRU: 处理时序维度 (每个球员)
-        self.gru = nn.GRU(
-            input_size=input_dim,
-            hidden_size=self.hidden_dim,
-            batch_first=True,
-            dropout=dropout if Config.N_LAYERS > 1 else 0
+        # ⚠️ 用 TemporalTransformerEncoder 替换 GRU
+        # 处理时序维度，在帧（horizon）维度上做 attention
+        self.temporal_encoder = TemporalTransformerEncoder(
+            input_dim=input_dim,
+            dropout=dropout
         )
         
-        # Transformer: 学习球员间交互
+        # Transformer: 学习球员间交互（player 维度）
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
             nhead=Config.N_HEADS,
@@ -619,18 +697,15 @@ class MultiPlayerGRUTransformer(nn.Module):
         """
         batch_size, n_players, seq_len, input_dim = x.shape
         
-        # ============ Step 1: GRU处理时序维度 ============
+        # ============ Step 1: 时序Transformer处理 ============
         # reshape: (batch, 22, seq_len, input_dim) -> (batch*22, seq_len, input_dim)
         x_flat = x.view(batch_size * n_players, seq_len, input_dim)
-        # print(f"[GRU Input] {x_flat.shape}")  # (704, 10, 167)
+        # print(f"[Temporal Encoder Input] {x_flat.shape}")  # (704, 10, 167)
         
-        # GRU: (batch*22, seq_len, input_dim) -> (batch*22, seq_len, hidden_dim)
-        gru_out, _ = self.gru(x_flat)
-        # print(f"[GRU Output] {gru_out.shape}")  # (704, 10, 128)
-        
-        # 取最后一帧的hidden state
-        h = gru_out[:, -1, :]  # (batch*22, hidden_dim)
-        # print(f"[GRU Last Frame] {h.shape}")  # (704, 128)
+        # ⚠️ 用 TemporalTransformerEncoder 替换 GRU
+        # 在时序维度上做 Transformer + Attention pooling
+        h = self.temporal_encoder(x_flat)  # (batch*22, hidden_dim)
+        # print(f"[Temporal Encoder Output] {h.shape}")  # (704, 128)
         
         # reshape回: (batch*22, hidden_dim) -> (batch, 22, hidden_dim)
         h = h.view(batch_size, n_players, self.hidden_dim)

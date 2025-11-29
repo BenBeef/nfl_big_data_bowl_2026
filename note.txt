@@ -379,3 +379,8 @@ Model saved for fold 5
 [SEED SUMMARY] seed 0 RMSEs: ['0.5663', '0.6031', '0.6188', '0.5624', '0.5374'] | mean=0.5776 yards
 ======================================================================
 
+
+开发中：
+修改：gru -> transformer + attention
+[VAL] seed 0 fold 1 → Huber loss=0.04623 | RMSE=0.9794
+Model saved for fold 1
