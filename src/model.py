@@ -565,7 +565,19 @@ def train_all_folds_multi_player_stt(
             input_dim,
         )
 
-        # 验证
+        # 训练集 RMSE
+        print(f"  Computing train RMSE on {len(X_tr)} plays...")
+        rmse_train = compute_val_rmse_multi_player_stt(
+            model,
+            X_tr_sc,
+            y_tr_dx,
+            y_tr_dy,
+            mask_tr,
+            Config.MAX_FUTURE_HORIZON,
+            Config.DEVICE,
+        )
+        
+        # 验证集 RMSE
         print(f"  Validating on {len(X_va)} plays...")
         rmse = compute_val_rmse_multi_player_stt(
             model,
@@ -578,9 +590,10 @@ def train_all_folds_multi_player_stt(
         )
 
         print(
-            f"[VAL] seed {seed} fold {fold} → "
-            f"Huber loss={loss:.5f} | "
-            f"RMSE={rmse:.4f}"
+            f"[RESULT] seed {seed} fold {fold} → "
+            f"Train RMSE={rmse_train:.4f} | "
+            f"Val RMSE={rmse:.4f} | "
+            f"Huber loss={loss:.5f}"
         )
 
         fold_rmses.append(rmse)
