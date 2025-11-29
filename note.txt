@@ -388,3 +388,12 @@ Model saved for fold 1
 开发中2：
 修改：开发中1 + 去掉F.gelu(self.pool_proj(ctx))
 [VAL] seed 0 fold 1 → Huber loss=0.04207 | RMSE=0.9179
+
+
+开发中3：
+修改：固定seed为
+[RESULT] seed 0 fold 1 → Train RMSE=0.8657 | Val RMSE=0.9853 | Huber loss=0.04763
+Model saved for fold 1
+
+
+[RESULT] seed 0 fold 1 → Train RMSE=0.8502 | Val RMSE=0.9797 | Huber loss=0.04586

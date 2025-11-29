@@ -43,6 +43,7 @@ if __name__ == '__main__':
     
     input_dim = len(feature_cols)
     seed = Config.SEEDS[0]
+    set_seed(seed)
     gkf = GroupKFold(n_splits=Config.N_FOLDS)
     groups = np.array([d['game_id'] for d in seq_meta])
 

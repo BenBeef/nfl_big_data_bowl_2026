@@ -693,6 +693,9 @@ class MultiPlayerGRUTransformer(nn.Module):
             num_layers=Config.N_LAYERS
         )
         
+        # LayerNorm: 在预测前稳定特征分布
+        self.pred_ln = nn.LayerNorm(self.hidden_dim)
+        
         # 预测头: 输出每个球员的 2*horizon 个值
         self.pred_head = nn.Linear(self.hidden_dim, 2 * self.horizon)
     
@@ -739,13 +742,21 @@ class MultiPlayerGRUTransformer(nn.Module):
         # print(f"[Transformer Output] {attn_out.shape}")  # (32, 22, 128)
         
         # ============ Step 3: 预测头 ============
-        # 输入: (batch, 22, hidden_dim) -> 输出: (batch, 22, 2*horizon)
-        pred = self.pred_head(attn_out)
-        # print(f"[Pred Head Output] {pred.shape}")  # (32, 22, 110)
         
-        # ============ Step 4: Reshape分离 dx/dy 和 horizon ============
-        # (batch, 22, 2*horizon) -> (batch, 22, horizon, 2)
-        pred = pred.view(batch_size, n_players, self.horizon, 2)
+        # ⚠️ Reshape 保证各球员独立处理
+        # (batch, 22, hidden_dim) -> (batch*22, hidden_dim)
+        attn_out_flat = attn_out.view(batch_size * n_players, self.hidden_dim)
+
+        # 输入: (batch*22, hidden_dim) -> 输出: (batch*22, hidden_dim)
+        # 先进行 LayerNorm 稳定特征
+        attn_out = self.pred_ln(attn_out)
+        
+        # 预测
+        pred_flat = self.pred_head(attn_out_flat)  # (batch*22, 2*horizon)
+        
+        # ============ Step 4: 恢复形状并分离 dx/dy 和 horizon ============
+        # (batch*22, 2*horizon) -> (batch, 22, horizon, 2)
+        pred = pred_flat.view(batch_size, n_players, self.horizon, 2)
         # print(f"[After Reshape] {pred.shape}")  # (32, 22, 55, 2)
         
         # ============ Step 5: Cumsum (每个球员各自在horizon维度) ============
