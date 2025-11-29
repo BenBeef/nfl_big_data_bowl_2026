@@ -100,7 +100,7 @@ def _convert_to_multi_player_format(
     seq_meta: list,
     seq_len: int,
     n_features: int,
-    n_players: int = 22,
+    n_players: int = Config.MAX_NUM_PLAYER,
 ):
     """
     将单个球员格式的序列转换为多球员格式 (play, n_players, seq_len, n_features)

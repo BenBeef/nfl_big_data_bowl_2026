@@ -460,14 +460,14 @@ def train_all_folds_multi_player_stt(
         X_tr_sc = []
         for seq in X_tr:  # seq: (22, seq_len, n_features)
             seq_scaled = np.zeros_like(seq, dtype=np.float32)
-            for player_idx in range(22):
+            for player_idx in range(Config.MAX_NUM_PLAYER):
                 seq_scaled[player_idx] = scaler.transform(seq[player_idx])
             X_tr_sc.append(seq_scaled)
         
         X_va_sc = []
         for seq in X_va:
             seq_scaled = np.zeros_like(seq, dtype=np.float32)
-            for player_idx in range(22):
+            for player_idx in range(Config.MAX_NUM_PLAYER):
                 seq_scaled[player_idx] = scaler.transform(seq[player_idx])
             X_va_sc.append(seq_scaled)
 
@@ -571,7 +571,7 @@ class MultiPlayerGRUTransformer(nn.Module):
     ────────────────────────────────────────────────────────────────────
     """
     
-    def __init__(self, input_dim: int, n_players: int = 22, dropout: float = 0.1):
+    def __init__(self, input_dim: int, n_players: int = Config.MAX_NUM_PLAYER, dropout: float = 0.1):
         super().__init__()
         self.n_players = n_players
         self.horizon = Config.MAX_FUTURE_HORIZON
@@ -655,7 +655,7 @@ class MultiPlayerGRUTransformer(nn.Module):
 
 
 def prepare_multi_player_targets(
-    batch_players_dx, batch_players_dy, max_h, n_players=22
+    batch_players_dx, batch_players_dy, max_h, n_players=Config.MAX_NUM_PLAYER
 ):
     """
     为多球员模型准备目标
@@ -821,7 +821,7 @@ def train_model_multi_player(
     # 定义模型
     model = MultiPlayerGRUTransformer(
         input_dim=input_dim,
-        n_players=22,
+        n_players=Config.MAX_NUM_PLAYER,
     ).to(device)
     
     optimizer = torch.optim.AdamW(
@@ -847,7 +847,7 @@ def train_model_multi_player(
             pred = model(bx)
             
             # 创建tracked_mask (这里假设全部都被追踪，可以从数据中读取)
-            tracked_mask = torch.ones(bx.shape[0], 22, device=device)
+            tracked_mask = torch.ones(bx.shape[0], Config.MAX_NUM_PLAYER, device=device)
             
             loss = criterion_multi_player(pred, by, bm, tracked_mask)
             
@@ -865,7 +865,7 @@ def train_model_multi_player(
                 bx, by, bm = bx.to(device), by.to(device), bm.to(device)
                 pred = model(bx)
                 
-                tracked_mask = torch.ones(bx.shape[0], 22, device=device)
+                tracked_mask = torch.ones(bx.shape[0], Config.MAX_NUM_PLAYER, device=device)
                 val_loss = criterion_multi_player(pred, by, bm, tracked_mask)
                 val_losses.append(val_loss.item())
         

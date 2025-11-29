@@ -76,7 +76,7 @@ class Config:
     HIDDEN_DIM = 128
     MAX_FUTURE_HORIZON = 55  # Number of steps to predict (filter out 94)
 
-    NUM_PLAYER = 22
+    MAX_NUM_PLAYER = 22
 
     N_HEADS = 4
     N_LAYERS = 2
