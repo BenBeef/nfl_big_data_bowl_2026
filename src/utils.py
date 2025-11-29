@@ -14,8 +14,9 @@ def set_seed(seed=42):
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True   # ⭐ 添加
+    torch.backends.cudnn.benchmark = False      # ⭐ 添加
     os.environ["PYTHONHASHSEED"] = str(seed)
-
 
 def load_input_output():
     train_input_files = [

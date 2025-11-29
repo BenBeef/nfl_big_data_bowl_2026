@@ -397,3 +397,28 @@ Model saved for fold 1
 
 
 [RESULT] seed 0 fold 1 → Train RMSE=0.8502 | Val RMSE=0.9797 | Huber loss=0.04586
+
+
+开发中4：
+修改：开发中3 + batch_size = 64
+[RESULT] seed 0 fold 1 → Train RMSE=0.7040 | Val RMSE=0.8930 | Huber loss=0.03966
+Model saved for fold 1
+
+开发中5：
+修改：开发中4 + 设定cudaCnn随机因子
+[RESULT] seed 0 fold 1 → Train RMSE=0.6738 | Val RMSE=0.8830 | Huber loss=0.03926
+
+
+开发中6：
+修改：开发中4 + 设定cudaCnn随机因子
+[RESULT] seed 0 fold 1 → Train RMSE=0.6646 | Val RMSE=0.8789 | Huber loss=0.03805
+
+开发中7：
+修改：开发中6 + batch_size = 32
+[RESULT] seed 0 fold 1 → Train RMSE=0.6754 | Val RMSE=0.8687 | Huber loss=0.03923
+Model saved for fold 1
+
+
+开发中8:
+修改：开发中6 + batch_size = 32 + patience = 20
+[RESULT] seed 0 fold 1 → Train RMSE=0.5077 | Val RMSE=0.8328 | Huber loss=0.03894

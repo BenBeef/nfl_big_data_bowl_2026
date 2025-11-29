@@ -33,6 +33,9 @@ if __name__ == '__main__':
         "receiver",
     ]
 
+    seed = Config.SEEDS[0]
+    set_seed(seed)
+
     print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")
     result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
     sequences, targets_dx, targets_dy, targets_fids, seq_meta, player_masks, feature_cols = result
@@ -42,8 +45,6 @@ if __name__ == '__main__':
     print(f"\n[3/4] [{timestamp()}] Training all folds (Multi-Player Model)...")
     
     input_dim = len(feature_cols)
-    seed = Config.SEEDS[0]
-    set_seed(seed)
     gkf = GroupKFold(n_splits=Config.N_FOLDS)
     groups = np.array([d['game_id'] for d in seq_meta])
 

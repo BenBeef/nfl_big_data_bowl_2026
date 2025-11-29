@@ -976,7 +976,7 @@ def train_model_multi_player(
         model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-5
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=5, factor=0.5
+        optimizer, patience=20, factor=0.5
     )
     
     best_loss, best_state, bad = float("inf"), None, 0
