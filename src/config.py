@@ -66,7 +66,7 @@ class Config:
     SEEDS = [0]
     # SEEDS = [42, 19, 89, 64]
     N_FOLDS = 5
-    BATCH_SIZE = 256
+    BATCH_SIZE = 32
     EPOCHS = 400 if not DEBUG else 20
     PATIENCE = 30
     LEARNING_RATE = 1e-3
