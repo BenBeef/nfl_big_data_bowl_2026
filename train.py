@@ -38,7 +38,7 @@ if __name__ == '__main__':
 
     print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")
     result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
-    sequences, targets_dx, targets_dy, targets_fids, seq_meta, player_masks, feature_cols = result
+    sequences, targets_dx, targets_dy, targets_fids, seq_meta, player_masks, feature_cols, rel_features = result
     
     print(f"  Generated player masks for {len(player_masks)} plays")
 
@@ -49,7 +49,7 @@ if __name__ == '__main__':
     groups = np.array([d['game_id'] for d in seq_meta])
 
     train_all_folds_multi_player_stt(
-        gkf, sequences, groups, targets_dx, targets_dy, player_masks, seed, input_dim
+        gkf, sequences, groups, targets_dx, targets_dy, player_masks, seed, input_dim, rel_features
     )
 
 

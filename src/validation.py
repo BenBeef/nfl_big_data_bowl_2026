@@ -71,7 +71,7 @@ def compute_val_rmse_stt(model, X_val_sc, ydx_list, ydy_list, horizon, device):
     return float(np.sqrt(se_sum2d.sum() / (2.0 * denom)))
 
 
-def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_multi_dy, player_masks, horizon, device):
+def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_multi_dy, player_masks, horizon, device, rel_val_multi=None):
     """
     多球员模型验证 - 计算被追踪球员的 RMSE
     
@@ -87,6 +87,13 @@ def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_
         X_val_multi = np.stack(X_val_multi).astype(np.float32)
     
     X_t = torch.tensor(X_val_multi, dtype=torch.float32).to(device)
+    
+    # ⭐ 处理相对特征
+    X_rel_t = None
+    if rel_val_multi is not None:
+        if isinstance(rel_val_multi, list):
+            rel_val_multi = np.stack(rel_val_multi).astype(np.float32)
+        X_rel_t = torch.tensor(rel_val_multi, dtype=torch.float32).to(device)
     
     # 从 player_masks 推导 tracked_mask（每个球员是否被追踪）
     # 如果某个球员的任何帧被标记为 1，就说明该球员被追踪
@@ -113,8 +120,8 @@ def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_
     tracked_mask_t = torch.tensor(tracked_mask, dtype=torch.float32).to(device)
     
     with torch.no_grad():
-        # ⚠️ 关键：在验证时也要传入 tracked_mask，保持与训练一致
-        predict = model(X_t, tracked_mask=tracked_mask_t).cpu().numpy()
+        # ⚠️ 关键：在验证时也要传入 tracked_mask 和相对特征，保持与训练一致
+        predict = model(X_t, tracked_mask=tracked_mask_t, x_relative=X_rel_t).cpu().numpy()
     
     # 计算 RMSE (只计算有效位置)
     pdx = predict[..., 0]  # (batch, 22, horizon)

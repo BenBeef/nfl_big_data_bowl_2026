@@ -427,3 +427,13 @@ Model saved for fold 1
 开发中9:
 修改：同开发中8，完整训练
 [SEED SUMMARY] seed 0 RMSEs: ['0.8328', '0.7440', '0.8617', '0.7603', '0.7336'] | mean=0.7865 yards
+
+
+开发中10:
+修改：同开发中9 + 位置编码
+[SEED SUMMARY] seed 0 fold 1 → Train RMSE=0.4531 | Val RMSE=0.8175 | Huber loss=0.03771
+
+
+开发中10:
+修改：同开发中9 + 位置编码 + 相对位置特征
+[RESULT] seed 0 fold 1 → Train RMSE=0.5919 | Val RMSE=0.8764 | Huber loss=0.03880
