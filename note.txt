@@ -244,6 +244,84 @@ AVG valid rmse:0.6168691992759705
 AVG avg_loss:0.08013240980060651
 
 
+============================== 相对特征 ===========================
+Epoch  10: train=0.0899, val=0.0924, Time_elapsed= 0min 58s
+Epoch  20: train=0.0715, val=0.0726, Time_elapsed= 1min 57s
+Epoch  30: train=0.0617, val=0.0628, Time_elapsed= 2min 56s
+Epoch  40: train=0.0574, val=0.0530, Time_elapsed= 3min 54s
+Epoch  50: train=0.0536, val=0.0617, Time_elapsed= 4min 52s
+Epoch  60: train=0.0493, val=0.0540, Time_elapsed= 5min 51s
+Epoch  70: train=0.0459, val=0.0550, Time_elapsed= 6min 48s
+Epoch  80: train=0.0430, val=0.0621, Time_elapsed= 7min 49s
+Epoch  90: train=0.0419, val=0.0486, Time_elapsed= 8min 49s
+Epoch 100: train=0.0400, val=0.0486, Time_elapsed= 9min 48s
+Epoch 110: train=0.0370, val=0.0460, Time_elapsed=10min 45s
+Epoch 120: train=0.0361, val=0.0443, Time_elapsed=11min 42s
+Epoch 130: train=0.0351, val=0.0452, Time_elapsed=12min 40s
+Epoch 140: train=0.0274, val=0.0396, Time_elapsed=13min 38s
+Epoch 150: train=0.0263, val=0.0419, Time_elapsed=14min 39s
+Epoch 160: train=0.0256, val=0.0415, Time_elapsed=15min 37s
+Epoch 170: train=0.0253, val=0.0436, Time_elapsed=16min 37s
+Epoch 180: train=0.0243, val=0.0406, Time_elapsed=17min 38s
+Epoch 190: train=0.0245, val=0.0414, Time_elapsed=18min 36s
+Epoch 200: train=0.0212, val=0.0393, Time_elapsed=19min 35s
+Epoch 210: train=0.0205, val=0.0384, Time_elapsed=20min 36s
+Epoch 220: train=0.0201, val=0.0399, Time_elapsed=21min 35s
+Epoch 230: train=0.0197, val=0.0387, Time_elapsed=22min 33s
+Epoch 240: train=0.0195, val=0.0386, Time_elapsed=23min 31s
+Epoch 250: train=0.0180, val=0.0382, Time_elapsed=24min 30s
+Epoch 260: train=0.0180, val=0.0384, Time_elapsed=25min 28s
+Epoch 270: train=0.0178, val=0.0376, Time_elapsed=26min 26s
+Epoch 280: train=0.0176, val=0.0380, Time_elapsed=27min 25s
+Epoch 290: train=0.0173, val=0.0380, Time_elapsed=28min 23s
+Epoch 300: train=0.0168, val=0.0378, Time_elapsed=29min 21s
+Early stop at epoch 308
+Computing train RMSE on 11297 plays...
+
+[RMSE诊断]
+  预测形状: (11297, 10, 55, 2)
+  目标形状: (11297, 10, 55, 2)
+  Mask 形状: (11297, 10, 55)
+  预测值范围: [-33.4117, 12.7741]
+  目标值范围: [-31.0500, 13.1300]
+
+  Mask 统计:
+    有效位置数: 451581
+    总位置数: 6213350
+    有效比率: 7.27%
+
+  误差统计:
+    SE 范围: [0.000000, 1084.685059]
+    Masked SE 总和: 202444.640625
+
+  标准 RMSE: 0.473446
+  无 Mask RMSE: 0.803183 (包含填充球员)
+  ============================================================
+  Validating on 2810 plays...
+
+[RMSE诊断]
+  预测形状: (2810, 10, 55, 2)
+  目标形状: (2810, 10, 55, 2)
+  Mask 形状: (2810, 10, 55)
+  预测值范围: [-32.3377, 8.7973]
+  目标值范围: [-30.5400, 8.4600]
+
+  Mask 统计:
+    有效位置数: 110603
+    总位置数: 1545500
+    有效比率: 7.16%
+
+  误差统计:
+    SE 范围: [0.000000, 878.607483]
+    Masked SE 总和: 149611.125000
+
+  标准 RMSE: 0.822401
+  无 Mask RMSE: 0.823608 (包含填充球员)
+  ============================================================
+[RESULT] seed 0 fold 1 → Train RMSE=0.4734 | Val RMSE=0.8224 | Huber loss=0.03709
+  Model saved for fold 1
+
+
 =================================== 提交列表 ===================================
 基线：
 AVG valid rmse:0.638507342338562
@@ -437,3 +515,14 @@ Model saved for fold 1
 开发中10:
 修改：同开发中9 + 位置编码 + 相对位置特征
 [RESULT] seed 0 fold 1 → Train RMSE=0.5919 | Val RMSE=0.8764 | Huber loss=0.03880
+
+
+开发中11:
+修改：同开发中9 + 位置编码 + 相对位置特征
+[RESULT] seed 0 fold 1 → Train RMSE=0.4820 | Val RMSE=0.8313 | Huber loss=0.03667
+
+
+开发中12:
+修改：同开发中9 + 位置编码 + 修改相对特征编码
+[RESULT] seed 0 fold 1 → Train RMSE=0.4734 | Val RMSE=0.8224 | Huber loss=0.03709
+

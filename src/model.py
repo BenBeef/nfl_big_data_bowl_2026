@@ -705,10 +705,6 @@ class MultiPlayerGRUTransformer(nn.Module):
             dropout=dropout
         )
         
-        # 学习融合权重
-        self.w_individual = nn.Parameter(torch.ones(1))
-        self.w_relative = nn.Parameter(torch.ones(1))
-        
         # Transformer: 学习球员间交互（player 维度）
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
@@ -767,8 +763,8 @@ class MultiPlayerGRUTransformer(nn.Module):
             # 相对特征时序处理
             h_relative = self.temporal_encoder_relative(x_rel_flat)  # (batch*22, hidden_dim)
             
-            # 融合：个体特征 + 相对特征
-            h = self.w_individual * h_individual + self.w_relative * h_relative
+            # ⭐ 融合：简单相加，让后续层学习最优的特征表示
+            h = h_individual + h_relative
         else:
             h = h_individual
         # print(f"[Temporal Encoder Output] {h.shape}")  # (704, 128)

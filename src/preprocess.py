@@ -1,3 +1,4 @@
+from ast import List
 import time
 import numpy as np
 import pandas as pd
@@ -99,7 +100,7 @@ def _convert_to_multi_player_format(
     targets_dy: list,
     seq_meta: list,
     seq_len: int,
-    n_features: int,
+    feature_cols:list,
     n_players: int = Config.MAX_NUM_PLAYER,
 ):
     """
@@ -140,6 +141,9 @@ def _convert_to_multi_player_format(
     rel_features_multi = []  # ⭐ 相对位移特征
 
     max_player_slot = -1
+
+    f_x_idx, f_y_idx = feature_cols.index('x'), feature_cols.index('y')
+    n_features = len(feature_cols)
     
     for (gid, pid), player_indices in play_groups.items():
         # 该 play 中的球员数
@@ -150,8 +154,6 @@ def _convert_to_multi_player_format(
         play_seqs = np.zeros((n_players, seq_len, n_features), dtype=np.float32)
         play_targets_dx = np.zeros((n_players, max_horizon), dtype=np.float32)
         play_targets_dy = np.zeros((n_players, max_horizon), dtype=np.float32)
-        # ⭐ 初始化相对位移特征 (2 * n_players: x和y各n_players列)
-        play_rel_features = np.zeros((n_players, seq_len, 2 * n_players), dtype=np.float32)
 
         max_player_slot = max(max_player_slot, len(player_indices))
         
@@ -174,20 +176,29 @@ def _convert_to_multi_player_format(
                     play_mask[player_slot, :len(dx_val)] = 1.0
         
         # ⭐ 计算相对位移特征（填充完play_seqs后立即计算）
-        # 提取位置信息 (前两列是 x, y)
-        positions = play_seqs[..., :2]  # (n_players, seq_len, 2)
+        # 初始化相对位移特征 (2 * n_players: x和y各n_players列)
+        play_rel_features = np.full((n_players, seq_len, 2 * n_players), fill_value=-300, dtype=np.float32)
+        # 提取位置信息 (使用 f_x_idx, f_y_idx)
+        positions_x = play_seqs[..., f_x_idx]  # (n_players, seq_len)
+        positions_y = play_seqs[..., f_y_idx]  # (n_players, seq_len)
         
         # 计算每个player相对于其他player的位移
-        for i in range(n_players):
-            for j in range(n_players):
+        for i in range(len(player_indices)):
+            for j in range(len(player_indices)):
                 if i != j:
-                    # x 方向相对位移: pos[j] - pos[i]
-                    play_rel_features[i, :, j] = positions[j, :, 0] - positions[i, :, 0]
-                    # y 方向相对位移: pos[j] - pos[i]
-                    play_rel_features[i, :, n_players + j] = positions[j, :, 1] - positions[i, :, 1]
+                    # 真实球员间的相对位移（pad自动为0）
+                    play_rel_features[i, :, j] = positions_x[j, :] - positions_x[i, :]
+                    play_rel_features[i, :, n_players + j] = positions_y[j, :] - positions_y[i, :]
+                else:
+                    # 真实球员间的相对位移（pad自动为0）
+                    play_rel_features[i, :, j] = 0.0
+                    play_rel_features[i, :, n_players + j] = 0.0
                 # 当 i == j 时，保持为 0 (初始化时已设)
         
         sequences_multi.append(play_seqs)
+        # print("positions_x\n", positions_x)
+        # print("positions_y\n", positions_y)
+        # print("play_rel_features\n", play_rel_features)
         if targets_dx:
             targets_dx_multi.append(play_targets_dx)
         if targets_dy:
@@ -334,7 +345,7 @@ def prepare_sequences_with_advanced_features(
         targets_dy, 
         seq_meta,
         Config.WINDOW_SIZE,
-        len(feature_cols)
+        feature_cols,
     )
     
     print(f"Multi-player sequences: {len(sequences_multi)} plays, each with 22 players")
