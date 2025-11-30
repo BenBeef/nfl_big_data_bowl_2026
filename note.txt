@@ -422,3 +422,8 @@ Model saved for fold 1
 开发中8:
 修改：开发中6 + batch_size = 32 + patience = 20
 [RESULT] seed 0 fold 1 → Train RMSE=0.5077 | Val RMSE=0.8328 | Huber loss=0.03894
+
+
+开发中9:
+修改：同开发中8，完整训练
+[SEED SUMMARY] seed 0 RMSEs: ['0.8328', '0.7440', '0.8617', '0.7603', '0.7336'] | mean=0.7865 yards
