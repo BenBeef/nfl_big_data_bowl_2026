@@ -34,7 +34,7 @@ if __name__ == '__main__':
     ]
 
     print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")
-    result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
+    result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups, multi_player=False)
     sequences, targets_dx, targets_dy, targets_fids, seq_meta, feature_cols = result
 
     

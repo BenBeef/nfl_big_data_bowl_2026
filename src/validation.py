@@ -71,7 +71,7 @@ def compute_val_rmse_stt(model, X_val_sc, ydx_list, ydy_list, horizon, device):
     return float(np.sqrt(se_sum2d.sum() / (2.0 * denom)))
 
 
-def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_multi_dy, player_masks, horizon, device, rel_val_multi=None):
+def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_multi_dy, player_masks, horizon, device, rel_val_multi=None, debug_log=False):
     """
     多球员模型验证 - 计算被追踪球员的 RMSE
     
@@ -137,6 +137,7 @@ def compute_val_rmse_multi_player_stt(model, X_val_multi, y_val_multi_dx, y_val_
     rmse = np.sqrt(se_sum2d.sum() / (2.0 * denom))
     
     # 诊断输出
-    diagnose_rmse_issue(predict, target, combined_mask)
+    if debug_log:
+        diagnose_rmse_issue(predict, target, combined_mask)
     
     return float(rmse)

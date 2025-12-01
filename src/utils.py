@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 import torch.nn as nn
+import pickle
 
 
 from .config import Config
@@ -220,3 +221,28 @@ def prepare_targets_stt(batch_dx, batch_dy, max_h):
 
     targets = torch.stack([torch.stack(tensors_x), torch.stack(tensors_y)], dim=-1)
     return targets, torch.stack(masks)
+
+
+def save_pickle(data, file_path):
+    # Save result as a pickle file for later use or debugging
+    try:
+        with open(file_path, "wb") as f:
+            pickle.dump(data, f)
+        print(f"✓ Saved training sequence result to {file_path}")
+    except Exception as e:
+        print(f"Failed to save training sequence result: {e}")
+
+
+def read_pickle(file_path):
+    # Load result from a pickle file
+    try:
+        with open(file_path, "rb") as f:
+            data = pickle.load(f)
+        print(f"✓ Successfully loaded data from {file_path}")
+        return data
+    except FileNotFoundError:
+        print(f"File not found: {file_path}")
+        return None
+    except Exception as e:
+        print(f"Failed to load data from pickle file: {e}")
+        return None

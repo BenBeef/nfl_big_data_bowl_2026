@@ -124,6 +124,30 @@ def _process_group_batch(
     return sequences, targets_dx, targets_dy, targets_fids, seq_meta
 
 
+def add_relative_feature(f_idx, play_seqs, n_filled_player, n_players, seq_len, def_val=0.0, fill_val=-0.0):
+    play_rel_features = np.full((n_players, seq_len, n_players), fill_value=fill_val, dtype=np.float32)
+    # 提取位置信息 (使用 f_idx)
+    pos_val = play_seqs[..., f_idx]  # (n_players, seq_len)
+    
+    # 向量化操作：计算相对值
+    # positions_x: (n_players, seq_len)
+    # 使用 broadcasting 计算所有对间的差值
+    positions_v_i = pos_val[:n_filled_player, np.newaxis, :]  # (next_slot, 1, seq_len)
+    positions_v_j = pos_val[np.newaxis, :n_filled_player, :]  # (1, next_slot, seq_len)
+    
+    rel_x = positions_v_i - positions_v_j  # (next_slot, next_slot, seq_len)
+    
+    # 填充到 play_rel_features
+    for i in range(n_filled_player):
+        for j in range(n_filled_player):
+            if i != j:
+                play_rel_features[i, :, j] = rel_x[i, j, :]
+            else:
+                # 自己对自己为 0（已初始化）
+                play_rel_features[i, :, j] = def_val
+    return play_rel_features
+    
+
 def _convert_to_multi_player_format(
     sequences: list,
     targets_dx: list,
@@ -174,6 +198,8 @@ def _convert_to_multi_player_format(
     max_player_slot = -1
 
     f_x_idx, f_y_idx = feature_cols.index('x'), feature_cols.index('y')
+    f_velocity_x_idx, f_velocity_y_idx = feature_cols.index('velocity_x'), feature_cols.index('velocity_y')
+    n_features = len(feature_cols)
     n_features = len(feature_cols)
     
     # ⭐ 多进程处理非预测球员数据（如果提供了）
@@ -290,36 +316,56 @@ def _convert_to_multi_player_format(
         
         # ⭐ 计算相对位移特征（填充完play_seqs后立即计算）
         # 初始化相对位移特征 (2 * n_players: x和y各n_players列)
-        play_rel_features = np.full((n_players, seq_len, 2 * n_players), fill_value=-300, dtype=np.float32)
-        # 提取位置信息 (使用 f_x_idx, f_y_idx)
-        positions_x = play_seqs[..., f_x_idx]  # (n_players, seq_len)
-        positions_y = play_seqs[..., f_y_idx]  # (n_players, seq_len)
+        # play_rel_features = np.full((n_players, seq_len, 2 * n_players), fill_value=-300, dtype=np.float32)
+        # # 提取位置信息 (使用 f_x_idx, f_y_idx)
+        # positions_x = play_seqs[..., f_x_idx]  # (n_players, seq_len)
+        # positions_y = play_seqs[..., f_y_idx]  # (n_players, seq_len)
         
         # ⭐ 计算所有球员间的相对位移（包括非预测球员）
-        n_filled_players = next_slot
+        # n_filled_players = next_slot
         
-        # ⭐ 向量化操作：计算相对位移
-        # positions_x: (n_players, seq_len)
-        # 使用 broadcasting 计算所有对间的差值
-        positions_x_i = positions_x[:n_filled_players, np.newaxis, :]  # (n_filled_players, 1, seq_len)
-        positions_x_j = positions_x[np.newaxis, :n_filled_players, :]  # (1, n_filled_players, seq_len)
-        positions_y_i = positions_y[:n_filled_players, np.newaxis, :]  # (n_filled_players, 1, seq_len)
-        positions_y_j = positions_y[np.newaxis, :n_filled_players, :]  # (1, n_filled_players, seq_len)
+        # # ⭐ 向量化操作：计算相对位移
+        # # positions_x: (n_players, seq_len)
+        # # 使用 broadcasting 计算所有对间的差值
+        # positions_x_i = positions_x[:n_filled_players, np.newaxis, :]  # (n_filled_players, 1, seq_len)
+        # positions_x_j = positions_x[np.newaxis, :n_filled_players, :]  # (1, n_filled_players, seq_len)
+        # positions_y_i = positions_y[:n_filled_players, np.newaxis, :]  # (n_filled_players, 1, seq_len)
+        # positions_y_j = positions_y[np.newaxis, :n_filled_players, :]  # (1, n_filled_players, seq_len)
         
-        # 计算相对位移 (n_filled_players, n_filled_players, seq_len)
-        rel_x = positions_x_j - positions_x_i  # (n_filled_players, n_filled_players, seq_len)
-        rel_y = positions_y_j - positions_y_i  # (n_filled_players, n_filled_players, seq_len)
+        # # 计算相对位移 (n_filled_players, n_filled_players, seq_len)
+        # rel_x = positions_x_j - positions_x_i  # (n_filled_players, n_filled_players, seq_len)
+        # rel_y = positions_y_j - positions_y_i  # (n_filled_players, n_filled_players, seq_len)
         
-        # 填充到 play_rel_features
-        for i in range(n_filled_players):
-            for j in range(n_filled_players):
-                if i != j:
-                    play_rel_features[i, :, j] = rel_x[i, j, :]
-                    play_rel_features[i, :, n_players + j] = rel_y[i, j, :]
-                else:
-                    # 自己对自己为 0（已初始化）
-                    play_rel_features[i, :, j] = 0.0
-                    play_rel_features[i, :, n_players + j] = 0.0
+        # # 填充到 play_rel_features
+        # for i in range(n_filled_players):
+        #     for j in range(n_filled_players):
+        #         if i != j:
+        #             play_rel_features[i, :, j] = rel_x[i, j, :]
+        #             play_rel_features[i, :, n_players + j] = rel_y[i, j, :]
+        #         else:
+        #             # 自己对自己为 0（已初始化）
+        #             play_rel_features[i, :, j] = 0.0
+        #             play_rel_features[i, :, n_players + j] = 0.0
+
+        # 计算相对特征
+        # 相对位移
+        x_rel_feat = add_relative_feature(f_x_idx, play_seqs, next_slot, n_players, seq_len)
+        y_rel_feat = add_relative_feature(f_y_idx, play_seqs, next_slot, n_players, seq_len)
+        # 相对距离
+        dis_rel_feat = np.sqrt(x_rel_feat ** 2 + y_rel_feat ** 2)
+
+        vel_x_rel_feat = add_relative_feature(f_velocity_x_idx, play_seqs, next_slot, n_players, seq_len)
+        vel_y_rel_feat = add_relative_feature(f_velocity_y_idx, play_seqs, next_slot, n_players, seq_len)
+
+        rel_features = [x_rel_feat, y_rel_feat, dis_rel_feat, vel_x_rel_feat, vel_y_rel_feat]
+
+        # 只保留相对12码之内的相对属性
+        # dis_mask = dis_rel_feature <= 12.0
+        # rel_features = [fe * dis_mask for fe in rel_features]  # 只保存某个
+
+        # 合并相对特征（沿最后一个维度连接）
+        play_rel_features = np.concatenate(rel_features, axis=-1, dtype=np.float32)
+        # shape: (n_players, seq_len, 2*n_players)
         
         sequences_multi.append(play_seqs)
         # print("positions_x\n", positions_x)

@@ -531,6 +531,10 @@ Model saved for fold 1
 修改：开发12 + 添加非预测player特征
 [RESULT] seed 0 fold 1 → Train RMSE=0.4952 | Val RMSE=0.8255 | Huber loss=0.03763
 
-开发中4:
+开发中14:
 修改：开发13 + batch_size warmup
 [RESULT] seed 0 fold 1 → Train RMSE=0.5216 | Val RMSE=0.8463 | Huber loss=0.03778
+
+
+全部训练：
+[SEED SUMMARY] seed 0 RMSEs: ['0.6087', '0.5742', '0.6298', '0.5581', '0.5852'] | mean=0.5911 yards

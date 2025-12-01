@@ -528,42 +528,31 @@ def train_all_folds_multi_player_stt(
         mask_va = [player_mask[i] for i in va]  # ← 验证集的mask
         
         # ⭐ 相对特征（如果提供了）
-        rel_tr = [rel_features[i] for i in tr] if rel_features is not None else None
-        rel_va = [rel_features[i] for i in va] if rel_features is not None else None
+        # rel_tr = [rel_features[i] for i in tr] if rel_features is not None else None
+        # rel_va = [rel_features[i] for i in va] if rel_features is not None else None
+
+        rel_tr = [rel_features[i][:, -1:, :] for i in tr]  if rel_features is not None else None # (22, 1, 2*n_players) - 只要最后一帧
+        rel_va = [rel_features[i][:, -1:, :] for i in va]  if rel_features is not None else None # (22, 1, 2*n_players)
+
 
         # Scaler: 需要处理多球员数据
-        # 将所有序列和球员展平用于fit
-        X_tr_flat = []
-        for seq in X_tr:  # seq: (22, seq_len, n_features)
-            for player_seq in seq:  # player_seq: (seq_len, n_features)
-                X_tr_flat.append(player_seq)
-        
+        # ⭐ 3D 数组需要展平到 2D: (22, seq_len, n_features) -> (22*seq_len, n_features)
         scaler = StandardScaler()
-        scaler.fit(np.vstack(X_tr_flat))
+        scaler.fit(np.vstack([s.reshape(-1, s.shape[-1]) for s in X_tr]))
 
-        # 对每个序列的每个球员应用scaler
-        X_tr_sc = []
-        for seq in X_tr:  # seq: (22, seq_len, n_features)
-            seq_scaled = np.zeros_like(seq, dtype=np.float32)
-            for player_idx in range(Config.MAX_NUM_PLAYER):
-                seq_scaled[player_idx] = scaler.transform(seq[player_idx])
-            X_tr_sc.append(seq_scaled)
-        
-        X_va_sc = []
-        for seq in X_va:
-            seq_scaled = np.zeros_like(seq, dtype=np.float32)
-            for player_idx in range(Config.MAX_NUM_PLAYER):
-                seq_scaled[player_idx] = scaler.transform(seq[player_idx])
-            X_va_sc.append(seq_scaled)
+        # ⭐ 对每个序列应用 scaler：展平 -> transform -> 恢复形状
+        X_tr_sc = [scaler.transform(s.reshape(-1, s.shape[-1])).reshape(s.shape) for s in X_tr]
+        X_va_sc = [scaler.transform(s.reshape(-1, s.shape[-1])).reshape(s.shape) for s in X_va]
         
         # ⭐ 相对特征的标准化处理（如果提供了）
-        # ⭐ 相对特征的标准化处理
         if rel_tr is not None:
             rel_scaler = StandardScaler()
-            rel_scaler.fit(np.vstack([p for seq in rel_tr for p in seq]))
+            # ⭐ 相对特征也是 3D (22, 1, 2*n_players)，需要展平到 2D
+            rel_scaler.fit(np.vstack([seq.reshape(-1, seq.shape[-1]) for seq in rel_tr]))
             
-            rel_tr = [np.array([rel_scaler.transform(p) for p in seq], dtype=np.float32) for seq in rel_tr]
-            rel_va = [np.array([rel_scaler.transform(p) for p in seq], dtype=np.float32) for seq in rel_va]
+            # 展平 -> transform -> 恢复形状
+            rel_tr = [rel_scaler.transform(seq.reshape(-1, seq.shape[-1])).reshape(seq.shape) for seq in rel_tr]
+            rel_va = [rel_scaler.transform(seq.reshape(-1, seq.shape[-1])).reshape(seq.shape) for seq in rel_va]
 
         # 训练多球员模型
         print(f"  Training {len(X_tr)} plays with {len(X_tr_sc[0]) if X_tr_sc else 0} players each...")
@@ -581,19 +570,6 @@ def train_all_folds_multi_player_stt(
             rel_va,  # ⭐ 验证集相对特征
         )
 
-        # 训练集 RMSE
-        print(f"  Computing train RMSE on {len(X_tr)} plays...")
-        rmse_train = compute_val_rmse_multi_player_stt(
-            model,
-            X_tr_sc,
-            y_tr_dx,
-            y_tr_dy,
-            mask_tr,
-            Config.MAX_FUTURE_HORIZON,
-            Config.DEVICE,
-            rel_tr,
-        )
-        
         # 验证集 RMSE
         print(f"  Validating on {len(X_va)} plays...")
         rmse = compute_val_rmse_multi_player_stt(
@@ -609,7 +585,6 @@ def train_all_folds_multi_player_stt(
 
         print(
             f"[RESULT] seed {seed} fold {fold} → "
-            f"Train RMSE={rmse_train:.4f} | "
             f"Val RMSE={rmse:.4f} | "
             f"Huber loss={loss:.5f}"
         )
@@ -724,6 +699,18 @@ class MultiPlayerGRUTransformer(nn.Module):
             torch.randn(1, n_players, self.hidden_dim)
         )
         
+        # ⭐ 相对特征投影层
+        self.rel_proj = nn.Linear(2 * n_players, self.hidden_dim)
+        
+        # ⭐ MultiheadAttention 融合相对特征
+        self.rel_attn = nn.MultiheadAttention(
+            self.hidden_dim,
+            num_heads=Config.N_HEADS,
+            batch_first=True,
+            dropout=dropout
+        )
+        self.rel_attn_ln = nn.LayerNorm(self.hidden_dim)
+        
         # LayerNorm: 在预测前稳定特征分布
         self.pred_ln = nn.LayerNorm(self.hidden_dim)
         
@@ -737,7 +724,7 @@ class MultiPlayerGRUTransformer(nn.Module):
                示例: (32, 22, 10, 167)
             tracked_mask: (batch, 22) - 可选，1表示被追踪/有效，0表示未追踪/pad
                           示例: (32, 22)
-            x_relative: (batch, 22, seq_len, 2*n_players) - 可选，相对位移特征
+            x_relative: (batch, 22, 1, 2*n_players) - 可选，相对位移特征（只有最后一帧）
         
         Returns:
             output: (batch, 22, horizon, 2)
@@ -754,23 +741,27 @@ class MultiPlayerGRUTransformer(nn.Module):
         # 在时序维度上做 Transformer + Attention pooling
         h_individual = self.temporal_encoder(x_flat)  # (batch*22, hidden_dim)
         
-        # ⭐ 处理相对特征（如果提供了）
+        # ⭐ 处理相对特征（如果提供了）- 使用 MultiheadAttention
         if x_relative is not None:
-            # reshape: (batch, 22, seq_len, 2*n_players) -> (batch*22, seq_len, 2*n_players)
-            rel_dim = x_relative.shape[-1]  # 应该是 2 * n_players
-            x_rel_flat = x_relative.reshape(batch_size * n_players, seq_len, rel_dim)
+            # x_relative: (batch, 22, 1, 2*n_players) - 只有最后一帧
+            x_rel = x_relative.squeeze(2)  # (batch, 22, 2*n_players)
             
-            # 相对特征时序处理
-            h_relative = self.temporal_encoder_relative(x_rel_flat)  # (batch*22, hidden_dim)
+            # 投影相对特征到 hidden_dim
+            # (batch, 22, 2*n_players) -> (batch, 22, hidden_dim)
+            h_rel = self.rel_proj(x_rel)
             
-            # ⭐ 融合：简单相加，让后续层学习最优的特征表示
-            h = h_individual + h_relative
+            # reshape 回 player 维度用于 attention
+            h_ind_2d = h_individual.view(batch_size, n_players, self.hidden_dim)  # (batch, 22, hidden_dim)
+            
+            # 多头注意力：用相对特征作为 key/value，个体特征作为 query
+            # 每个球员关注所有球员的相对信息
+            attn_out, _ = self.rel_attn(h_ind_2d, h_rel, h_rel)  # (batch, 22, hidden_dim)
+            
+            # 应用 LayerNorm 和残差连接
+            h = self.rel_attn_ln(h_ind_2d + attn_out)  # (batch, 22, hidden_dim)
         else:
-            h = h_individual
-        # print(f"[Temporal Encoder Output] {h.shape}")  # (704, 128)
-        
-        # reshape回: (batch*22, hidden_dim) -> (batch, 22, hidden_dim)
-        h = h.view(batch_size, n_players, self.hidden_dim)
+            # reshape回: (batch*22, hidden_dim) -> (batch, 22, hidden_dim)
+            h = h_individual.view(batch_size, n_players, self.hidden_dim)
         # print(f"[After Reshape] {h.shape}")  # (32, 22, 128)
         
         # ⭐ 添加 Player 位置编码
@@ -818,7 +809,7 @@ class MultiPlayerGRUTransformer(nn.Module):
 
 
 def prepare_multi_player_targets(
-    batch_players_dx, batch_players_dy, max_h, n_players=Config.MAX_NUM_PLAYER
+    batch_players_dx, batch_players_dy, max_h
 ):
     """
     为多球员模型准备目标
@@ -834,7 +825,6 @@ def prepare_multi_player_targets(
         masks: (batch, 22, max_h)
     """
     batch_targets = []
-    batch_masks = []
     
     for players_dx, players_dy in zip(batch_players_dx, batch_players_dy):
         # players_dx: (n_players, horizon_i)  - 长度可能不同
@@ -857,12 +847,8 @@ def prepare_multi_player_targets(
         player_target = torch.stack([dx_t, dy_t], dim=-1)
         batch_targets.append(player_target)
         
-        # mask: (n_players, max_h) - 全1表示所有位置都有效
-        mask = torch.ones(n_players, max_h, dtype=torch.float32)
-        batch_masks.append(mask)
-    
-    # 输出: (batch, 22, max_h, 2) 和 (batch, 22, max_h)
-    return torch.stack(batch_targets), torch.stack(batch_masks)
+    # 输出: (batch, 22, max_h, 2)
+    return torch.stack(batch_targets)
 
 
 def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_multi_dy, player_masks_multi, 
@@ -893,7 +879,8 @@ def _build_multi_player_train_batches(X_train_multi, y_train_multi_dx, y_train_m
         
         # Stack: (batch, 22, seq_len, n_features)
         bx = torch.tensor(np.stack(X_batch).astype(np.float32))
-        by, bm = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
+        by = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
+        bm = torch.tensor(np.stack(masks_batch).astype(np.float32))
         
         # 从 player_masks 中提取 tracked_mask
         # tracked_mask: (batch, 22) - 1表示该球员至少有一个有效的horizon，0表示全为无效
@@ -936,7 +923,8 @@ def _build_multi_player_val_batches(X_val_multi, y_val_multi_dx, y_val_multi_dy,
         masks_batch = [player_masks_multi[j] for j in range(i, end)]
         
         bx = torch.tensor(np.stack(X_batch).astype(np.float32))
-        by, bm = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
+        by = prepare_multi_player_targets(y_dx_batch, y_dy_batch, Config.MAX_FUTURE_HORIZON)
+        bm = torch.tensor(np.stack(masks_batch).astype(np.float32))
         
         # 从 player_masks 中提取 tracked_mask
         btm_list = []
@@ -1045,7 +1033,7 @@ def train_model_multi_player(
         model.parameters(), lr=Config.LEARNING_RATE, weight_decay=1e-5
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, patience=20, factor=0.5
+        optimizer, patience=5, factor=0.5
     )
     
     best_loss, best_state, bad = float("inf"), None, 0
