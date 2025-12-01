@@ -526,3 +526,11 @@ Model saved for fold 1
 修改：同开发中9 + 位置编码 + 修改相对特征编码
 [RESULT] seed 0 fold 1 → Train RMSE=0.4734 | Val RMSE=0.8224 | Huber loss=0.03709
 
+
+开发中13:
+修改：开发12 + 添加非预测player特征
+[RESULT] seed 0 fold 1 → Train RMSE=0.4952 | Val RMSE=0.8255 | Huber loss=0.03763
+
+开发中4:
+修改：开发13 + batch_size warmup
+[RESULT] seed 0 fold 1 → Train RMSE=0.5216 | Val RMSE=0.8463 | Huber loss=0.03778

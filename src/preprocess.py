@@ -352,6 +352,7 @@ def prepare_sequences_with_advanced_features(
     input_df: pd.DataFrame,
     output_df: pd.DataFrame,
     feature_groups: list = None,
+    multi_player=True
 ):
 
     print(f"\n{'='*80}")
@@ -464,33 +465,44 @@ def prepare_sequences_with_advanced_features(
     # 转换为多球员格式: (play, 22, seq_len, input_dim)
     # ========================================================================
     print(f"\nConverting to multi-player format (for MultiPlayerGRUTransformer)...")
-    
-    sequences_multi, targets_dx_multi, targets_dy_multi, player_masks_multi, seq_meta_multi, rel_features_multi = _convert_to_multi_player_format(
-        sequences, 
-        targets_dx, 
-        targets_dy, 
-        seq_meta,
-        Config.WINDOW_SIZE,
-        feature_cols,
-        df_no_predicted=df_no_predicted,  # ⭐ 传递完整数据用于补充非预测球员
-    )
-    
-    print(f"Multi-player sequences: {len(sequences_multi)} plays, each with 22 players")
-    if len(sequences_multi) > 0:
-        print(f"  Original features shape: (22, {Config.WINDOW_SIZE}, {len(feature_cols)})")
-        print(f"  Relative features shape: (22, {Config.WINDOW_SIZE}, 44)")
-        if targets_dx_multi:
-            print(f"  Target shapes: (22, {targets_dx_multi[0].shape[1]})")
-
-    if Config.TRAIN:
-        return (
-            sequences_multi,
-            targets_dx_multi,
-            targets_dy_multi,
-            targets_fids,
-            seq_meta_multi,
-            player_masks_multi,
+    if multi_player:
+        sequences_multi, targets_dx_multi, targets_dy_multi, player_masks_multi, seq_meta_multi, rel_features_multi = _convert_to_multi_player_format(
+            sequences, 
+            targets_dx, 
+            targets_dy, 
+            seq_meta,
+            Config.WINDOW_SIZE,
             feature_cols,
-            rel_features_multi,  # ⭐ 新增
+            df_no_predicted=df_no_predicted,  # ⭐ 传递完整数据用于补充非预测球员
         )
-    return sequences_multi, seq_meta_multi, feature_cols, player_masks_multi, rel_features_multi  # ⭐ 新增
+        
+        print(f"Multi-player sequences: {len(sequences_multi)} plays, each with 22 players")
+        if len(sequences_multi) > 0:
+            print(f"  Original features shape: (22, {Config.WINDOW_SIZE}, {len(feature_cols)})")
+            print(f"  Relative features shape: (22, {Config.WINDOW_SIZE}, 44)")
+            if targets_dx_multi:
+                print(f"  Target shapes: (22, {targets_dx_multi[0].shape[1]})")
+
+        if Config.TRAIN:
+            return (
+                sequences_multi,
+                targets_dx_multi,
+                targets_dy_multi,
+                targets_fids,
+                seq_meta_multi,
+                player_masks_multi,
+                feature_cols,
+                rel_features_multi,  # ⭐ 新增
+            )
+        return sequences_multi, seq_meta_multi, feature_cols, player_masks_multi, rel_features_multi  # ⭐ 新增
+    else:
+        if Config.TRAIN:
+            return (
+                sequences,
+                targets_dx,
+                targets_dy,
+                targets_fids,
+                seq_meta,
+                feature_cols,
+            )
+        return sequences, seq_meta, feature_cols
