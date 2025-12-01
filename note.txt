@@ -535,6 +535,7 @@ Model saved for fold 1
 修改：开发13 + batch_size warmup
 [RESULT] seed 0 fold 1 → Train RMSE=0.5216 | Val RMSE=0.8463 | Huber loss=0.03778
 
-
+提交31：
 全部训练：
+修改：fix掉mask-bug
 [SEED SUMMARY] seed 0 RMSEs: ['0.6087', '0.5742', '0.6298', '0.5581', '0.5852'] | mean=0.5911 yards
