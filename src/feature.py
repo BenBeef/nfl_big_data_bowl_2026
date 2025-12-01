@@ -1069,7 +1069,8 @@ class FeatureEngineer:
                     f"[{datetime.now().strftime('%H:%M:%S')}] [!] Unknown feature group: {group_name}"
                 )
 
+        df_no_predicted = df[df["player_to_predict"] == False]
         df = df[df["player_to_predict"]]
         final_cols = sorted(set(self.created_feature_cols))
         print(f"\nTotal features created: {len(final_cols)}")
-        return df, final_cols
+        return df, final_cols, df_no_predicted

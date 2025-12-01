@@ -29,6 +29,36 @@ def _canonicalize_key_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _process_no_predict_batch(
+    batch_keys: list,
+    grouped_no_predict_dict: dict,
+    feature_cols: list,
+    seq_len: int,
+    queue = None
+):
+    """⭐ 多进程处理非预测球员数据"""
+    not_predict_groups = {}
+    for (gid, pid) in batch_keys:
+        play_nfl_groups = {}
+        play_keys = [k for k in grouped_no_predict_dict.keys() if k[:2] == (gid, pid)]
+        for key in play_keys:
+            group = grouped_no_predict_dict[key]
+            nfl_id = key[2]
+            group = group.sort_values("frame_id")
+            input_window = group[feature_cols].tail(seq_len)
+            if len(input_window) < seq_len:
+                pad_len = seq_len - len(input_window)
+                pad_df = pd.DataFrame(np.nan, index=range(pad_len), columns=input_window.columns)
+                input_window = pd.concat([pad_df, input_window], ignore_index=True)
+            input_window = input_window.fillna(input_window.mean(numeric_only=True))
+            play_nfl_groups[nfl_id] = input_window[feature_cols].to_numpy(dtype=np.float32)
+        if play_nfl_groups:
+            not_predict_groups[(gid, pid)] = play_nfl_groups
+        if queue is not None:
+            queue.put(1)
+    return not_predict_groups
+
+
 def _process_group_batch(
     batch_keys: list,
     grouped_dict: dict,
@@ -101,6 +131,7 @@ def _convert_to_multi_player_format(
     seq_meta: list,
     seq_len: int,
     feature_cols:list,
+    df_no_predicted: pd.DataFrame = None,
     n_players: int = Config.MAX_NUM_PLAYER,
 ):
     """
@@ -145,6 +176,67 @@ def _convert_to_multi_player_format(
     f_x_idx, f_y_idx = feature_cols.index('x'), feature_cols.index('y')
     n_features = len(feature_cols)
     
+    # ⭐ 多进程处理非预测球员数据（如果提供了）
+    not_predict_groups = {}
+    if df_no_predicted is not None:
+        # 预先分组 df_no_predicted
+        grouped_no_predict_dict = {
+            (gid, pid, nfl_id): group
+            for (gid, pid, nfl_id), group in df_no_predicted.groupby(
+                ["game_id", "play_id", "nfl_id"], sort=False
+            )
+        }
+        
+        # 获取所有 (gid, pid) 对
+        play_keys = sorted(set((k[0], k[1]) for k in grouped_no_predict_dict.keys()))
+        
+        # 分批处理
+        batch_size = (len(play_keys) + Config.MAX_WORKER - 1) // Config.MAX_WORKER
+        batches = [play_keys[i:i+batch_size] for i in range(0, len(play_keys), batch_size)]
+        
+        grouped_no_predict_dicts = [{} for _ in range(len(batches))]
+        game_dict = {}
+        for key in grouped_no_predict_dict:
+            gid, pid, nfl_id = key
+            game_dict[(gid, pid)] = len(game_dict) % len(grouped_no_predict_dicts)
+
+        for key, val in grouped_no_predict_dict.items():
+            gid, pid, nfl_id = key
+            idx = game_dict[(gid, pid)]
+            grouped_no_predict_dicts[idx][key] = val.copy()
+        
+        print(f'Processing no predict players...')
+        # 多进程处理
+        pbar = tqdm(total=len(play_keys), desc="Processing non-predicted players")
+        manager = Manager()
+        queue = manager.Queue()
+        
+        with ProcessPoolExecutor(max_workers=Config.MAX_WORKER) as ex:
+            futures = [
+                ex.submit(
+                    _process_no_predict_batch, 
+                    b, 
+                    grouped_no_predict_dicts[i], 
+                    feature_cols, 
+                    seq_len,
+                    queue 
+                    )
+                for i, b in enumerate(batches)
+            ]
+
+            finished = 0
+            while finished < len(play_keys):
+                queue.get()
+                finished += 1
+                pbar.update(1)
+            
+            # 按完成顺序收集结果
+            for fut in as_completed(futures):
+                batch_result = fut.result()
+                not_predict_groups.update(batch_result)
+        
+        pbar.close()
+    
     for (gid, pid), player_indices in play_groups.items():
         # 该 play 中的球员数
         n_actual_players = len(player_indices)
@@ -175,6 +267,27 @@ def _convert_to_multi_player_format(
                     # mask值
                     play_mask[player_slot, :len(dx_val)] = 1.0
         
+        # ⭐ 初始化 next_slot，用于填充非预测球员
+        next_slot = len(player_indices)
+        
+        # ⭐ 填充非预测球员（如果提供了）
+        if (gid, pid) in not_predict_groups:
+            play_nfl_groups = not_predict_groups[(gid, pid)]
+            
+            # 填充未预测的球员
+            for nfl_id in play_nfl_groups:
+                # ⭐ 直接获取预处理好的数据（已经过 tail + pad + fillna）
+                player_seq = play_nfl_groups[nfl_id]
+                if len(player_seq) == 0:
+                    continue
+                
+                # 处理 NaN
+                player_seq = np.nan_to_num(player_seq, nan=0.0)
+                
+                # 填充到 play_seqs
+                play_seqs[next_slot] = player_seq
+                next_slot += 1
+        
         # ⭐ 计算相对位移特征（填充完play_seqs后立即计算）
         # 初始化相对位移特征 (2 * n_players: x和y各n_players列)
         play_rel_features = np.full((n_players, seq_len, 2 * n_players), fill_value=-300, dtype=np.float32)
@@ -182,18 +295,31 @@ def _convert_to_multi_player_format(
         positions_x = play_seqs[..., f_x_idx]  # (n_players, seq_len)
         positions_y = play_seqs[..., f_y_idx]  # (n_players, seq_len)
         
-        # 计算每个player相对于其他player的位移
-        for i in range(len(player_indices)):
-            for j in range(len(player_indices)):
+        # ⭐ 计算所有球员间的相对位移（包括非预测球员）
+        n_filled_players = next_slot
+        
+        # ⭐ 向量化操作：计算相对位移
+        # positions_x: (n_players, seq_len)
+        # 使用 broadcasting 计算所有对间的差值
+        positions_x_i = positions_x[:n_filled_players, np.newaxis, :]  # (n_filled_players, 1, seq_len)
+        positions_x_j = positions_x[np.newaxis, :n_filled_players, :]  # (1, n_filled_players, seq_len)
+        positions_y_i = positions_y[:n_filled_players, np.newaxis, :]  # (n_filled_players, 1, seq_len)
+        positions_y_j = positions_y[np.newaxis, :n_filled_players, :]  # (1, n_filled_players, seq_len)
+        
+        # 计算相对位移 (n_filled_players, n_filled_players, seq_len)
+        rel_x = positions_x_j - positions_x_i  # (n_filled_players, n_filled_players, seq_len)
+        rel_y = positions_y_j - positions_y_i  # (n_filled_players, n_filled_players, seq_len)
+        
+        # 填充到 play_rel_features
+        for i in range(n_filled_players):
+            for j in range(n_filled_players):
                 if i != j:
-                    # 真实球员间的相对位移（pad自动为0）
-                    play_rel_features[i, :, j] = positions_x[j, :] - positions_x[i, :]
-                    play_rel_features[i, :, n_players + j] = positions_y[j, :] - positions_y[i, :]
+                    play_rel_features[i, :, j] = rel_x[i, j, :]
+                    play_rel_features[i, :, n_players + j] = rel_y[i, j, :]
                 else:
-                    # 真实球员间的相对位移（pad自动为0）
+                    # 自己对自己为 0（已初始化）
                     play_rel_features[i, :, j] = 0.0
                     play_rel_features[i, :, n_players + j] = 0.0
-                # 当 i == j 时，保持为 0 (初始化时已设)
         
         sequences_multi.append(play_seqs)
         # print("positions_x\n", positions_x)
@@ -249,7 +375,7 @@ def prepare_sequences_with_advanced_features(
 
     # Feature Engineering
     fe = FeatureEngineer(feature_groups)
-    processed_df, feature_cols = fe.transform(input_df)
+    processed_df, feature_cols, df_no_predicted = fe.transform(input_df)
 
     # Build sequences
     start_time = time.time()
@@ -346,6 +472,7 @@ def prepare_sequences_with_advanced_features(
         seq_meta,
         Config.WINDOW_SIZE,
         feature_cols,
+        df_no_predicted=df_no_predicted,  # ⭐ 传递完整数据用于补充非预测球员
     )
     
     print(f"Multi-player sequences: {len(sequences_multi)} plays, each with 22 players")
