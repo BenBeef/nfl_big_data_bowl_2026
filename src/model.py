@@ -14,6 +14,103 @@ from .utils import (
 from .validation import compute_val_rmse_stt, compute_val_rmse_multi_player_stt
 
 
+class RelativeAttention(nn.Module):
+    """
+    ⭐ Bias-based Graph Transformer: 在 Attention 计算中融入相对特征
+    
+    Attention Score = (Q @ K^T) / sqrt(d) + RelativeBias
+    """
+    
+    def __init__(self, hidden_dim, n_heads=8, n_nodes=22, dropout=0.1):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.n_heads = n_heads
+        self.n_nodes = n_nodes
+        self.head_dim = hidden_dim // n_heads
+        
+        assert hidden_dim % n_heads == 0, "hidden_dim must be divisible by n_heads"
+        
+        # 标准多头注意力投影
+        self.q_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.k_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.v_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.out_proj = nn.Linear(hidden_dim, hidden_dim)
+        
+        # ⭐ 相对特征投影到 attention bias
+        # 为每个节点对生成一个 bias 值
+        # 简化方案：使用两个独立的投影，然后外积
+        self.rel_query_proj = nn.Linear(hidden_dim, Config.N_HEADS)
+        self.rel_key_proj = nn.Linear(hidden_dim, Config.N_HEADS)
+        
+        self.dropout = nn.Dropout(dropout)
+        self.scale = self.head_dim ** -0.5
+    
+    def forward(self, x, rel_features=None, key_padding_mask=None):
+        """
+        Args:
+            x: (batch, n_nodes, hidden_dim)
+            rel_features: (batch, n_nodes, hidden_dim) - 相对特征
+            key_padding_mask: (batch, n_nodes) - True 表示 pad
+        
+        Returns:
+            output: (batch, n_nodes, hidden_dim)
+        """
+        batch_size, seq_len, hidden_dim = x.shape
+        
+        # 投影 Q, K, V
+        Q = self.q_proj(x)  # (batch, n_nodes, hidden_dim)
+        K = self.k_proj(x)
+        V = self.v_proj(x)
+        
+        # 重塑为多头: (batch, n_nodes, n_heads, head_dim)
+        Q = Q.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)  # (batch, n_heads, n_nodes, head_dim)
+        K = K.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        V = V.view(batch_size, seq_len, self.n_heads, self.head_dim).transpose(1, 2)
+        
+        # 计算 attention scores
+        scores = torch.matmul(Q, K.transpose(-2, -1)) * self.scale  # (batch, n_heads, n_nodes, n_nodes)
+        
+        # ⭐ 加入相对特征 bias
+        if rel_features is not None:
+            # rel_features: (batch, n_nodes, hidden_dim)
+            # 使用相对特征生成 bias
+            # 方案：rel_features 的每个节点投影为查询和键的 bias
+            rel_query = self.rel_query_proj(rel_features)  # (batch, n_nodes, n_heads)
+            rel_key = self.rel_key_proj(rel_features)      # (batch, n_nodes, n_heads)
+            
+            # 生成节点对的 bias: (batch, n_nodes, n_heads) @ (batch, n_heads, n_nodes)
+            # -> (batch, n_nodes, n_nodes, n_heads)
+            rel_query = rel_query.permute(0, 2, 1)  # (batch, n_heads, n_nodes)
+            rel_key = rel_key.permute(0, 2, 1)      # (batch, n_heads, n_nodes)
+            
+            # 计算相对 bias: (batch, n_heads, n_nodes, 1) + (batch, n_heads, 1, n_nodes)
+            rel_bias = rel_query.unsqueeze(-1) + rel_key.unsqueeze(-2)  # (batch, n_heads, n_nodes, n_nodes)
+            
+            # 加到 attention scores
+            scores = scores + rel_bias
+        
+        # 应用 key padding mask
+        if key_padding_mask is not None:
+            # key_padding_mask: (batch, n_nodes) - True 表示 pad
+            scores = scores.masked_fill(key_padding_mask.unsqueeze(1).unsqueeze(1), float('-inf'))
+        
+        # Softmax
+        attn_weights = torch.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        # 加权求和
+        output = torch.matmul(attn_weights, V)  # (batch, n_heads, n_nodes, head_dim)
+        
+        # 合并多头
+        output = output.transpose(1, 2).contiguous()  # (batch, n_nodes, n_heads, head_dim)
+        output = output.view(batch_size, seq_len, hidden_dim)  # (batch, n_nodes, hidden_dim)
+        
+        # 最后的输出投影
+        output = self.out_proj(output)
+        
+        return output
+
+
 class TemporalHuber(nn.Module):
     def __init__(self, delta=0.5, time_decay=0.02, lam_smooth=0.01):
         super().__init__()
@@ -702,6 +799,14 @@ class MultiPlayerGRUTransformer(nn.Module):
         # ⭐ 相对特征投影层
         self.rel_proj = nn.Linear(Config.REL_FEATURE_CNT * n_players, self.hidden_dim)
         
+        # ⭐ 使用自定义的 RelativeAttention 替换 transformer
+        self.rel_attn_layer = RelativeAttention(
+            hidden_dim=self.hidden_dim,
+            n_heads=Config.N_HEADS,
+            n_nodes=n_players,
+            dropout=dropout
+        )
+        
         # ⭐ MultiheadAttention 融合相对特征
         self.rel_attn = nn.MultiheadAttention(
             self.hidden_dim,
@@ -741,27 +846,8 @@ class MultiPlayerGRUTransformer(nn.Module):
         # 在时序维度上做 Transformer + Attention pooling
         h_individual = self.temporal_encoder(x_flat)  # (batch*22, hidden_dim)
         
-        # ⭐ 处理相对特征（如果提供了）- 使用 MultiheadAttention
-        if x_relative is not None:
-            # x_relative: (batch, 22, 1, 2*n_players) - 只有最后一帧
-            x_rel = x_relative.squeeze(2)  # (batch, 22, 2*n_players)
-            
-            # 投影相对特征到 hidden_dim
-            # (batch, 22, 2*n_players) -> (batch, 22, hidden_dim)
-            h_rel = self.rel_proj(x_rel)
-            
-            # reshape 回 player 维度用于 attention
-            h_ind_2d = h_individual.view(batch_size, n_players, self.hidden_dim)  # (batch, 22, hidden_dim)
-            
-            # 多头注意力：用相对特征作为 key/value，个体特征作为 query
-            # 每个球员关注所有球员的相对信息
-            attn_out, _ = self.rel_attn(h_ind_2d, h_rel, h_rel)  # (batch, 22, hidden_dim)
-            
-            # 应用 LayerNorm 和残差连接
-            h = self.rel_attn_ln(h_ind_2d + attn_out)  # (batch, 22, hidden_dim)
-        else:
-            # reshape回: (batch*22, hidden_dim) -> (batch, 22, hidden_dim)
-            h = h_individual.view(batch_size, n_players, self.hidden_dim)
+        # ⭐ Reshape 回 player 维度: (batch*22, hidden_dim) -> (batch, 22, hidden_dim)
+        h = h_individual.view(batch_size, n_players, self.hidden_dim)
         # print(f"[After Reshape] {h.shape}")  # (32, 22, 128)
         
         # ⭐ 添加 Player 位置编码
@@ -776,11 +862,21 @@ class MultiPlayerGRUTransformer(nn.Module):
             src_key_padding_mask = (tracked_mask == 0)  # (batch, 22)
             # print(f"[Key Padding Mask] {src_key_padding_mask.shape}")  # (32, 22)
         
-        attn_out = self.transformer_encoder(
+        # ⭐ Bias-based Graph Transformer：在 Attention 中融入相对特征
+        rel_features_proj = None
+        if x_relative is not None:
+            # x_relative: (batch, 22, 1, 2*n_players)
+            x_rel = x_relative.squeeze(2)  # (batch, 22, 2*n_players)
+            # 投影相对特征：(batch, 22, 2*n_players) -> (batch, 22, hidden_dim)
+            rel_features_proj = self.rel_proj(x_rel)  # (batch, 22, hidden_dim)
+        
+        # 使用自定义的 RelativeAttention 层（在 attention score 上加入相对特征 bias）
+        attn_out = self.rel_attn_layer(
             h,
-            src_key_padding_mask=src_key_padding_mask
+            rel_features=rel_features_proj,
+            key_padding_mask=src_key_padding_mask
         )
-        # print(f"[Transformer Output] {attn_out.shape}")  # (32, 22, 128)
+        # print(f"[Relative Attention Output] {attn_out.shape}")  # (32, 22, 128)
         
         # ============ Step 3: 预测头 ============
         

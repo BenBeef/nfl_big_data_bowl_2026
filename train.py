@@ -37,9 +37,9 @@ if __name__ == '__main__':
     set_seed(seed)
 
     print(f"\n[2/4] [{timestamp()}] Prepare sequences data...")
-    result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
+    # result = prepare_sequences_with_advanced_features(train_input, train_output, feature_groups)
 
-    save_pickle(result, "multi_player_result_x_y_v_d.pkl")
+    result = read_pickle("multi_player_result_x_y_v_d.pkl")
     sequences, targets_dx, targets_dy, targets_fids, seq_meta, player_masks, feature_cols, rel_features = result
     
     print(f"  Generated player masks for {len(player_masks)} plays")

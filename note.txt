@@ -542,3 +542,8 @@ Model saved for fold 1
 
 
 [SEED SUMMARY] seed 0 RMSEs: ['0.6218', '0.569', '0.6326', '0.5581', '0.5852'] | mean=0.5911 yards
+
+提交33：
+全部训练：
+修改：提交31 + GAT
+[SEED SUMMARY] seed 0 RMSEs: ['0.5934', '0.5762', '0.6344', '0.5605', '0.5802'] | mean=0.5889 yards
