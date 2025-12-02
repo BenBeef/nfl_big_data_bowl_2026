@@ -674,7 +674,7 @@ class MultiPlayerGRUTransformer(nn.Module):
         
         # ⭐ 相对位移特征处理（方案B：分离投影）
         # 相对位移特征维度 = 2 * n_players (x和y各n_players列)
-        rel_input_dim = 2 * n_players
+        rel_input_dim = Config.REL_FEATURE_CNT * n_players
         self.temporal_encoder_relative = TemporalTransformerEncoder(
             input_dim=rel_input_dim,
             dropout=dropout
@@ -700,7 +700,7 @@ class MultiPlayerGRUTransformer(nn.Module):
         )
         
         # ⭐ 相对特征投影层
-        self.rel_proj = nn.Linear(2 * n_players, self.hidden_dim)
+        self.rel_proj = nn.Linear(Config.REL_FEATURE_CNT * n_players, self.hidden_dim)
         
         # ⭐ MultiheadAttention 融合相对特征
         self.rel_attn = nn.MultiheadAttention(

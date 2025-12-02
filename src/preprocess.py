@@ -199,6 +199,7 @@ def _convert_to_multi_player_format(
 
     f_x_idx, f_y_idx = feature_cols.index('x'), feature_cols.index('y')
     f_velocity_x_idx, f_velocity_y_idx = feature_cols.index('velocity_x'), feature_cols.index('velocity_y')
+    dir_idx = feature_cols.index('dir')
     n_features = len(feature_cols)
     n_features = len(feature_cols)
     
@@ -357,7 +358,9 @@ def _convert_to_multi_player_format(
         vel_x_rel_feat = add_relative_feature(f_velocity_x_idx, play_seqs, next_slot, n_players, seq_len)
         vel_y_rel_feat = add_relative_feature(f_velocity_y_idx, play_seqs, next_slot, n_players, seq_len)
 
-        rel_features = [x_rel_feat, y_rel_feat, dis_rel_feat, vel_x_rel_feat, vel_y_rel_feat]
+        dir_rel_feat = add_relative_feature(dir_idx, play_seqs, next_slot, n_players, seq_len)
+
+        rel_features = [x_rel_feat, y_rel_feat, dis_rel_feat, vel_x_rel_feat, vel_y_rel_feat, dir_rel_feat]
 
         # 只保留相对12码之内的相对属性
         # dis_mask = dis_rel_feature <= 12.0

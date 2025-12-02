@@ -77,6 +77,7 @@ class Config:
     MAX_FUTURE_HORIZON = 55  # Number of steps to predict (filter out 94)
 
     MAX_NUM_PLAYER = 22
+    REL_FEATURE_CNT = 6
 
     N_HEADS = 4
     N_LAYERS = 2

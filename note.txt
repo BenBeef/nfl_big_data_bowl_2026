@@ -539,3 +539,6 @@ Model saved for fold 1
 全部训练：
 修改：fix掉mask-bug
 [SEED SUMMARY] seed 0 RMSEs: ['0.6087', '0.5742', '0.6298', '0.5581', '0.5852'] | mean=0.5911 yards
+
+
+[SEED SUMMARY] seed 0 RMSEs: ['0.6218', '0.569', '0.6326', '0.5581', '0.5852'] | mean=0.5911 yards
