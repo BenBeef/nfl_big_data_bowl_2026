@@ -126,15 +126,11 @@ def predict(
         all_preds_dx.append(dx_tta)
         all_preds_dy.append(dy_tta)
 
-    print("-------------------------------2-------------------------------", flush=True)
     ens_dx = np.mean(all_preds_dx, axis=0)
     ens_dy = np.mean(all_preds_dy, axis=0)
 
-    
     x_last_uni = np.array([meta['x'] for meta in test_meta], dtype=np.float32)
     y_last_uni = np.array([meta['y'] for meta in test_meta], dtype=np.float32)
-    
-    print("-------------------------------3-------------------------------", flush=True)
 
     H = ens_dx.shape[1]
 
