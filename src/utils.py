@@ -129,10 +129,12 @@ def _seed_dir(base_dir: Path, seed: int) -> Path:
 
 
 def save_fold_artifacts_stt(
-    seed: int, fold: int, scaler, model: nn.Module, base_dir: Path
+    seed: int, fold: int, scaler, model: nn.Module, base_dir: Path, rel_scaler=None
 ):
     sdir = _seed_dir(base_dir, seed)
     joblib.dump(scaler, sdir / f"scaler_fold{fold}.pkl")
+    if rel_scaler is not None:
+        joblib.dump(rel_scaler, sdir / f"rel_scaler_fold{fold}.pkl")
     torch.save(model.state_dict(), sdir / f"model_fold{fold}.pt")
 
 
@@ -186,22 +188,27 @@ def load_saved_ensemble_stt(base_dir: Path, model_class: torch.nn.Module):
     seeds = meta["seeds"]
     n_folds = int(meta["n_folds"])
 
-    models, scalers = [], []
+    models, scalers, rel_scalers = [], [], []
     for seed in seeds:
         sdir = base_dir / f"seed_{seed}"
         for fold in range(1, n_folds + 1):
             sc_path = sdir / f"scaler_fold{fold}.pkl"
             model_path = sdir / f"model_fold{fold}.pt"
+            rel_sc_path = sdir / f"rel_scaler_fold{fold}.pkl"
             if not (sc_path.exists() and model_path.exists()):
                 print(f"[WARN] missing seed={seed} fold={fold}, skip")
                 continue
             scaler = joblib.load(sc_path)
+            rel_scaler = joblib.load(rel_sc_path) if rel_sc_path.exists() else None
             m = model_class(len(feature_cols)).to(Config.DEVICE)
             m.load_state_dict(torch.load(model_path, map_location=Config.DEVICE))
             m.eval()
             scalers.append(scaler)
+            rel_scalers.append(rel_scaler)
             models.append(m)
 
+    # ⭐ 将 rel_scalers 存储到 meta 中，供推理时使用
+    meta["rel_scalers"] = rel_scalers
     return models, scalers, meta
 
 

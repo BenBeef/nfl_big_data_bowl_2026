@@ -1,7 +1,7 @@
 # %load_ext autoreload
 # %autoreload 2
 
-TIMETAG = "20251108_071543"
+DIR_TAG = "output/2025_12_03_090536_modify_3"
 
 
 # !mkdir -p ./src
@@ -46,30 +46,32 @@ from src.config import Config
 import polars as pl
 from src.utils import load_saved_ensemble_stt, invert_to_original_direction
 from src.preprocess import prepare_sequences_with_advanced_features
-from src.model import STTransformer
-from src.predict import predict_sst
+from src.model import MultiPlayerGRUTransformer
+from src.predict import predict_multi_player
 
 # Global variables to store models (loaded once on first predict call)
 _models_loaded = False
 _models = None
 _scalers = None
+_rel_scalers = None
 _meta = None
 _feature_cols = None
 
 
 def load_models_once():
     """Load models on first predict call (no 5-minute time limit)"""
-    global _models_loaded, _models, _scalers, _meta, _feature_cols
+    global _models_loaded, _models, _scalers, _rel_scalers, _meta, _feature_cols
 
     if _models_loaded:
         return
 
     print("[SERVER] Loading models for first time...")
     cfg = Config()
-    cfg.MODELS_DIR = Path(f"/kaggle/input/nfl2026/{TIMETAG}")
+    cfg.MODELS_DIR = Path(f"./{DIR_TAG}")
 
-    _models, _scalers, _meta = load_saved_ensemble_stt(cfg.MODELS_DIR, STTransformer)
+    _models, _scalers, _meta = load_saved_ensemble_stt(cfg.MODELS_DIR, MultiPlayerGRUTransformer)
     _feature_cols = _meta["feature_cols"]
+    _rel_scalers = _meta.get("rel_scalers", [None] * len(_models))  # ⭐ 加载 rel_scalers
 
     _models_loaded = True
     print(f"[SERVER] Loaded {len(_models)} models successfully")
@@ -88,7 +90,7 @@ def predict(
     Returns:
         DataFrame with x, y coordinates
     """
-    global _models, _scalers, _meta, _feature_cols
+    global _models, _scalers, _rel_scalers, _meta, _feature_cols
 
     # First call: load models (no time limit)
     if not _models_loaded:
@@ -100,34 +102,39 @@ def predict(
 
     cfg = Config()
     saved_groups = _meta.get("feature_groups", cfg.FEATURE_GROUPS)
-
     # Build sequences
-    test_seqs, test_meta, feat_cols_t = prepare_sequences_with_advanced_features(
+    test_seqs, test_meta_multi, feat_cols_t, masks, rel_features = prepare_sequences_with_advanced_features(
         test_input_pd,
         test_pd,
         feature_groups=saved_groups,
     )
 
-    idx_x = feat_cols_t.index("x")
-    idx_y = feat_cols_t.index("y")
-
     X_test_raw = list(test_seqs)
-    x_last_uni = np.array([s[-1, idx_x] for s in X_test_raw], dtype=np.float32)
-    y_last_uni = np.array([s[-1, idx_y] for s in X_test_raw], dtype=np.float32)
-
     all_preds_dx, all_preds_dy = [], []
-    for m, sc in zip(_models, _scalers):
-        dx_tta, dy_tta = predict_sst(
+    test_meta = None
+    for m, sc, rel_sc in zip(_models, _scalers, _rel_scalers):
+        dx_tta, dy_tta, test_meta = predict_multi_player(
             m,
             sc,
             X_test_raw,
             cfg.DEVICE,
+            test_meta_multi, 
+            rel_features,
+            rel_sc,
+            np.array(masks, dtype=np.float32)
         )
         all_preds_dx.append(dx_tta)
         all_preds_dy.append(dy_tta)
 
+    print("-------------------------------2-------------------------------", flush=True)
     ens_dx = np.mean(all_preds_dx, axis=0)
     ens_dy = np.mean(all_preds_dy, axis=0)
+
+    
+    x_last_uni = np.array([meta['x'] for meta in test_meta], dtype=np.float32)
+    y_last_uni = np.array([meta['y'] for meta in test_meta], dtype=np.float32)
+    
+    print("-------------------------------3-------------------------------", flush=True)
 
     H = ens_dx.shape[1]
 
@@ -165,20 +172,26 @@ def predict(
     return predictions
 
 
-if Config.SUBMIT:
-    import kaggle_evaluation.nfl_inference_server  # type: ignore
 
-    # Initialize inference server
-    inference_server = kaggle_evaluation.nfl_inference_server.NFLInferenceServer(
-        predict
-    )
+if __name__ == '__main__':
+    Config.TRAIN = False
+    test = pl.read_csv('./nfl-big-data-bowl-2026-prediction/test.csv')
+    test_input = pl.read_csv('./nfl-big-data-bowl-2026-prediction/test_input.csv')
+    predict(test, test_input)
+# if Config.SUBMIT:
+#     import kaggle_evaluation.nfl_inference_server  # type: ignore
 
-    # Start server in competition environment
-    if os.getenv("KAGGLE_IS_COMPETITION_RERUN"):
-        print("[SERVER] Starting inference server...")
-        inference_server.serve()
-    else:
-        print("[SERVER] Running local gateway for testing...")
-        inference_server.run_local_gateway(
-            ("/kaggle/input/nfl-big-data-bowl-2026-prediction/",)
-        )
+#     # Initialize inference server
+#     inference_server = kaggle_evaluation.nfl_inference_server.NFLInferenceServer(
+#         predict
+#     )
+
+#     # Start server in competition environment
+#     if os.getenv("KAGGLE_IS_COMPETITION_RERUN"):
+#         print("[SERVER] Starting inference server...")
+#         inference_server.serve()
+#     else:
+#         print("[SERVER] Running local gateway for testing...")
+#         inference_server.run_local_gateway(
+#             ("/kaggle/input/nfl-big-data-bowl-2026-prediction/",)
+#         )

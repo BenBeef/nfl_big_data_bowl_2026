@@ -115,6 +115,8 @@ def _process_group_batch(
                 "nfl_id": nid,
                 "frame_id": int(input_window.iloc[-1]["frame_id"]),
                 "play_direction": play_dir_val,
+                "x": float(seq[-1, idx_x]), 
+                'y': float(seq[-1, idx_y])
             }
         )
 
@@ -278,6 +280,9 @@ def _convert_to_multi_player_format(
         
         # 初始化 mask
         play_mask = np.zeros((n_players, max_horizon), dtype=np.float32)
+
+        if not Config.TRAIN:
+            play_mask[:n_actual_players, :] = 1.0
         
         # 填充实际的球员数据和生成 mask
         for player_slot, idx in enumerate(player_indices):
@@ -389,6 +394,8 @@ def _convert_to_multi_player_format(
             "frame_id": first_meta["frame_id"],
             "play_direction": first_meta["play_direction"],
             "n_players": n_actual_players,
+            "origin_metas": [seq_meta[idx] for idx in player_indices], 
+            "max_players": Config.MAX_NUM_PLAYER
         }
         seq_meta_multi.append(play_meta)
     

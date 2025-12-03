@@ -705,6 +705,7 @@ def train_all_folds_multi_player_stt(
             scaler=scaler,
             model=model,
             base_dir=Config.SAVE_DIR,
+            rel_scaler = rel_scaler
         )
         print(f"  Model saved for fold {fold}")
 
